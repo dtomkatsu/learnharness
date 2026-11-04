@@ -527,7 +527,7 @@ export function warmupItems(state: LearnerState, record: ChatRecord, max = 3): I
 
 const RECAP_PROMPT = `You write the "where we left off" note a learner sees when they come back to a lesson after a break.
 
-From the end of the lesson transcript given, write 2–3 plain sentences addressed to the learner as "you": what was just being worked on, the last thing they got right or wrong if it matters, and what comes next. No greeting, no preamble, no praise. Reply with the sentences only.`;
+From the end of the lesson transcript given, write 2–3 plain sentences addressed to the learner as "you": what was just being worked on, the last thing they got right or wrong if it matters, and what comes next. Write it in your own words — never copy or continue the tutor's last message — and begin with "You were" or "You had". No greeting, no preamble, no praise. Reply with the sentences only.`;
 
 const textOf = (m: unknown) => {
 	const x = m as { role?: string; content?: Block[] | string };
