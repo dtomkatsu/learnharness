@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
-import type { ChatParent, ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
+import type { ChatParent, ChatRecord, LessonVocabulary, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
 import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
@@ -197,6 +197,20 @@ function deleteChat(id: string): boolean {
 	}
 }
 
+/** Read-modify-write the lesson's vocabulary ledger (2026-11). Synchronous
+ *  read → change → write, so nothing in this process interleaves. Like
+ *  saveTree, ledger bookkeeping is not conversation activity: updatedAt stays.
+ *  Returns the ledger as written (null for an unknown chat). */
+function updateVocabulary(id: string, change: (v: LessonVocabulary) => void): LessonVocabulary | null {
+	const record = getChat(id);
+	if (!record) return null;
+	const v: LessonVocabulary = record.vocabulary ?? { terms: [], flagged: [], sideQuestions: [] };
+	change(v);
+	record.vocabulary = v;
+	writeChat(record);
+	return v;
+}
+
 /** Persist the session plan tree (plan tools call this in execute). */
 function saveTree(id: string, tree: PlanTree): void {
 	const record = getChat(id);
@@ -213,6 +227,7 @@ export const chatStore: ChatStore = {
 	listChats,
 	saveMessages,
 	saveTree,
+	updateVocabulary,
 	saveSettings,
 	renameChat,
 	deleteChat,

@@ -38,6 +38,19 @@ export async function POST(req: Request) {
 		parent = term ? { id: p.id, term } : { id: p.id };
 	}
 	const chat = createChat(titleFromPrompt(title || "Untitled session"), kind, parent);
+	// The lesson it was asked from hears of it (2026-11): the term waits on
+	// that lesson's vocabulary ledger and reaches its teacher as a note at
+	// the start of its next turn — a side question is a gap in the lesson.
+	if (parent) {
+		try {
+			const term = parent.term || chat.title;
+			stores.chatStore.updateVocabulary?.(parent.id, (v) => {
+				v.sideQuestions.push({ chatId: chat.id, term, at: new Date().toISOString() });
+			});
+		} catch (err) {
+			console.error(`[chat ${parent.id}] side-question note failed:`, err);
+		}
+	}
 	// PER-SESSION MODELS (owner, 2026-09-28): a session owns its model +
 	// thinking level from birth — stamped verbatim from the STRONG slot,
 	// the new-session default. From here the strong slot never reaches

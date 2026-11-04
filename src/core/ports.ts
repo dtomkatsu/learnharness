@@ -13,6 +13,7 @@ import type { LhMessage } from "./native-messages.ts";
 import type {
 	ChatParent,
 	ChatRecord,
+	LessonVocabulary,
 	ChatSettings,
 	ChatSummary,
 	GraphChain,
@@ -38,6 +39,8 @@ export interface ChatStore {
 	createChat(title: string, kind?: "practice", parent?: ChatParent): ChatRecord;
 	/** The full record, or null if unknown id / corrupt file. */
 	getChat(id: string): ChatRecord | null;
+	/** Read-modify-write the lesson vocabulary ledger (null = unknown chat). */
+	updateVocabulary?(id: string, change: (v: LessonVocabulary) => void): LessonVocabulary | null;
 	/** All sessions, newest activity first (the sidebar's list view). */
 	listChats(): ChatSummary[];
 	/** Persist the full native message list (the record IS the agent

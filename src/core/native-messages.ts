@@ -76,7 +76,8 @@ export interface LhMarkerMessage {
 		| "practice-thinking"
 		| "practice-next"
 		| "problem-dismissed"
-		| "compaction";
+		| "compaction"
+		| "lesson-notes";
 	/** The model-facing text ("" for plan blocks — UI-only). */
 	content: string;
 	display: boolean;
@@ -303,6 +304,23 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
 		content: lines.join("\n"),
 		display: true,
 		details: { propositions: picks, chains },
+		timestamp: Date.now(),
+	};
+}
+
+/** The lesson notes (2026-11): the vocabulary check's findings — terms the
+ *  lesson used before teaching them, side questions the learner opened —
+ *  handed to the teacher at the start of its next turn, AFTER that turn's
+ *  input (an answer's tool result stays adjacent to its call). Model-facing
+ *  only: the transcript never shows it (view.ts). */
+export function newLessonNotesMessage(text: string, details: unknown): LhMarkerMessage {
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "lesson-notes",
+		content: text,
+		display: false,
+		details,
 		timestamp: Date.now(),
 	};
 }
@@ -847,7 +865,7 @@ export function nativeInputCause(message: AgentMessage, history: readonly AgentM
 	if (message.role === "custom") {
 		if (["probe-handoff", "subagent-steer", "subagent-abort"].includes(message.customType)) return "automatic";
 		if (["practice-thinking", "practice-next"].includes(message.customType)) return "learner";
-		return ["graph-context", "plan-block", "problem-dismissed", "compaction"].includes(message.customType) ? "neutral" : "unrecognizable";
+		return ["graph-context", "plan-block", "problem-dismissed", "compaction", "lesson-notes"].includes(message.customType) ? "neutral" : "unrecognizable";
 	}
 	if (message.role === "toolResult") {
 		if (message.isError && (message.details as { questionRecovery?: unknown } | null)?.questionRecovery === true) {

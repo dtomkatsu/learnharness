@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { vocabularyBriefSuffix } from "../core/vocabulary.ts";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { invalidInputResult, questionResult, serverExecute } from "./tool-execute.ts";
 import {
@@ -458,7 +459,13 @@ export function createTeacherTools(
 			find: findTool,
 			grep: grepTool,
 			...planTools(ctx),
-			...jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable }),
+			...jobTools({
+				chatId: ctx.chatId,
+				jobStore: ctx.jobStore,
+				spawn: ctx.spawn,
+				searchAvailable: ctx.searchAvailable,
+				vocabulary: () => vocabularyBriefSuffix(ctx.chatStore.getChat(ctx.chatId)?.vocabulary),
+			}),
 		},
 		withoutMechanics(enabled),
 		),

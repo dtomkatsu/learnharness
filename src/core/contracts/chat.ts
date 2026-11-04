@@ -33,6 +33,50 @@ export type ChatKind = "teach" | "practice";
  *  instead of as a subject by itself. Set once, at creation; absent = a
  *  session in its own right. A parent deleted later leaves the link
  *  dangling, and the list then shows the thread at the top level. */
+/** One term in a lesson's vocabulary ledger. */
+export interface VocabTerm {
+	term: string;
+	/** A plain one-line meaning, as taught (empty for terms the learner brought). */
+	gloss: string;
+	/** taught = the lesson introduced it; known = the learner already held it
+	 *  (the plan's `known`, or the learner used it first). */
+	source: "taught" | "known";
+	/** The message that taught it (absent for known terms). */
+	messageId?: string;
+	at: string;
+}
+
+/** A term the lesson used before teaching it, waiting to reach the teacher. */
+export interface VocabFlag {
+	term: string;
+	/** Why the checker flagged it — where it appeared. */
+	where: string;
+	messageId?: string;
+	at: string;
+}
+
+/** A side question asked from this lesson, waiting to reach the teacher. */
+export interface VocabSideQuestion {
+	chatId: string;
+	term: string;
+	at: string;
+}
+
+/** The lesson's vocabulary ledger (2026-11): the remedy for concepts used
+ *  before they are taught. Written by plan_init (planned/known), the
+ *  after-turn vocabulary check (terms, flags) and side-question creation
+ *  (sideQuestions); flags and side questions are handed to the teacher as a
+ *  lesson-notes marker at the start of its next turn, then cleared. */
+export interface LessonVocabulary {
+	terms: VocabTerm[];
+	/** plan_init's declaration: per node, the terms it introduces and needs. */
+	planned?: Record<string, { introduces: string[]; needs: string[] }>;
+	flagged: VocabFlag[];
+	sideQuestions: VocabSideQuestion[];
+	/** The newest assistant message the check has read. */
+	checkedThrough?: string;
+}
+
 export interface ChatParent {
 	/** The session it was asked from. */
 	id: string;
@@ -50,6 +94,10 @@ export interface ChatRecord {
 	kind?: ChatKind;
 	/** A side thread's session of origin (absent = top level). */
 	parent?: ChatParent;
+	/** The lesson's vocabulary ledger (2026-11): what has been taught, what the
+	 *  plan says each node introduces and needs, and terms used before they
+	 *  were taught — see core/vocabulary.ts. Absent = nothing recorded yet. */
+	vocabulary?: LessonVocabulary;
 	/** The session's plan tree (vision §2) — written by plan tools via saveTree. */
 	tree?: PlanTree;
 	/** Append-only usage log (observability, 2026-09): one entry per model

@@ -27,6 +27,11 @@ export interface JobToolContext {
 	 *  Research dispatch does not depend on it: web_fetch is keyless and
 	 *  web_search reports a missing provider as a recoverable tool result. */
 	searchAvailable?: () => boolean;
+	/** The lesson's vocabulary as a brief suffix (2026-11): demo and figure
+	 *  builders never see the lesson, so the terms the learner holds ride the
+	 *  brief — they label in those words or define the rest on the artifact.
+	 *  Empty string / absent = nothing to add. */
+	vocabulary?: () => string;
 }
 
 export const researchInputSchema = Type.Object({
@@ -144,7 +149,9 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			label: "demo",
 			description: DEMO_DESCRIPTION,
 			parameters: demoInputSchema,
-			execute: serverExecute("demo", demoInputSchema, (input, { toolCallId }) => dispatch(ctx, "demo", toolCallId, DEMO_ACK, input)),
+			execute: serverExecute("demo", demoInputSchema, (input, { toolCallId }) =>
+				dispatch(ctx, "demo", toolCallId, DEMO_ACK, { ...input, brief: input.brief + (ctx.vocabulary?.() ?? "") }),
+			),
 		},
 		visual: {
 			name: "visual",
@@ -152,7 +159,7 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			description: VISUAL_DESCRIPTION,
 			parameters: visualInputSchema,
 			execute: serverExecute("visual", visualInputSchema, (input, { toolCallId }) =>
-				dispatch(ctx, "visual", toolCallId, VISUAL_ACK, input),
+				dispatch(ctx, "visual", toolCallId, VISUAL_ACK, { ...input, brief: input.brief + (ctx.vocabulary?.() ?? "") }),
 			),
 		},
 		pdf: {

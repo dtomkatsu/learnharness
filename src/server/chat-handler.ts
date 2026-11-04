@@ -45,7 +45,9 @@ import { beginTurn, endTurn } from "./turn-liveness.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
-import { hasProbeDone, hasUnresolvedQuestion } from "../core/native-messages.ts";
+import { hasProbeDone, hasUnresolvedQuestion, newLessonNotesMessage } from "../core/native-messages.ts";
+import { lessonNotesText, normTerm } from "../core/vocabulary.ts";
+import { triggerVocabularyCheck } from "./vocabulary-check.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./compaction.ts";
 import { catalogContextLimits, refreshConnectionCatalog } from "./model-catalog.ts";
@@ -363,7 +365,18 @@ export async function handleChatInput(
 	// truth instead of the pre-answer record. (Wave C: the wake's markers
 	// ride this same write-ahead - the pump de-queued them at fire, so this
 	// is the ONLY copy ever appended.)
-	const merged = [...record.messages, ...appends];
+	// LESSON NOTES (2026-11): what the vocabulary check found since the last
+	// turn — terms used before they were taught, side questions the learner
+	// opened — ride this turn as a model-facing marker AFTER the input (an
+	// answer's tool result stays adjacent to its call; the marker appends to
+	// the tail, so the cached prefix is untouched). Learner-driven teaching
+	// turns only: never a wake, retry or continuation, never practice/probe.
+	const noteable = (input.type === "text" || input.type === "answer") && record.kind !== "practice" && hasProbeDone(record.messages);
+	const pendingFlags = noteable ? record.vocabulary?.flagged ?? [] : [];
+	const pendingSide = noteable ? record.vocabulary?.sideQuestions ?? [] : [];
+	const notesText = noteable ? lessonNotesText(pendingFlags, pendingSide) : null;
+	const notes = notesText ? newLessonNotesMessage(notesText, { flagged: pendingFlags, sideQuestions: pendingSide }) : null;
+	const merged = [...record.messages, ...appends, ...(notes ? [notes] : [])];
 	// Retry preserves every persisted attempt. Pi needs a non-assistant
 	// tail to start continue(), so its temporary history omits the trailing
 	// failures only. Count that SAME temporary prefix at settlement, or the
@@ -377,6 +390,18 @@ export async function handleChatInput(
 		console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 		endTurn(chatId);
 		return new Response("Your input could not be saved. Please try again.", { status: 500 });
+	}
+	// The notes are on disk: what they carried is no longer waiting.
+	if (notes) {
+		try {
+			const sentFlags = new Set(pendingFlags.map((f) => normTerm(f.term))), sentSide = new Set(pendingSide.map((s) => s.chatId));
+			stores.chatStore.updateVocabulary?.(chatId, (v) => {
+				v.flagged = v.flagged.filter((f) => !sentFlags.has(normTerm(f.term)));
+				v.sideQuestions = v.sideQuestions.filter((s) => !sentSide.has(s.chatId));
+			});
+		} catch (err) {
+			console.error(`[chat ${chatId}] lesson-notes bookkeeping failed:`, err);
+		}
 	}
 	// Visibility bookkeeping is not the canonical save. Its failure must
 	// neither misreport a saved input as lost nor prevent the turn running.
@@ -607,6 +632,16 @@ export async function handleChatInput(
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
 					triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
+				}
+				// THE VOCABULARY CHECK (2026-11): teaching turns only — one cheap call
+				// sorts the new teaching's terms into taught / used-too-early / the
+				// learner's own; its flags reach the teacher as next turn's notes.
+				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && teaching) {
+					triggerVocabularyCheck(chatId, {
+						chatStore: stores.chatStore,
+						engine: () => resolveEngine("auditor"),
+						canStart: (provider) => providerKeyPresent(provider) && connectionBackgroundAllowed(provider),
+					});
 				}
 				// PARKED DISMISSAL (owner, 2026-10-04): a dismissal that arrived
 				// mid-turn was parked by the dismiss route (202); now that
