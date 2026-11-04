@@ -161,3 +161,14 @@ Deviations from the plan: review runs as an API + the tablet's screens, not as a
 | History | deleted with the ledger | rebuilt from the transcripts on first use (`backfillEvidence`, idempotent) |
 
 Measured on a copy of the live data (24 sessions), real cheap model (claude-code haiku): backfill 72 answers in 17 ms; 27 of 29 propositions get a state from past answers (3 of 29 with a same-message join only — the teaching-window join is what makes the history usable); calibration 77% right at 66% mean confidence, 10% of ≥75%-confident answers wrong; three cards written in 7–12 s; a grade in ~1.5 s; the after-turn check on the Indonesian lesson recorded 18 taught words and flagged the four forms used before teaching (-nya, -lah, deh, kan).
+
+## Round two (2026-11-04, a8f3016 → 4cb35f3)
+
+- **Tests never touch data/**: NODE_ENV=test with no LH_DATA_DIR gets a scratch folder (config.ts). A full run had left 44 fixture chats and 34 jobs in a real library.
+- **Glossary tidy** (POST /api/learner/glossary/tidy; also in the background after a term check and when the glossary is opened): lone letters and numbers retired by rule; the cheap model retires everyday words, merges duplicates, fills missing meanings — as merge / retire / meaning evidence. On real data: 41 terms looked at, 1 retired (p), 9 meanings filled, nothing merged (the model kept bend / shares / neighbor / shape: the lesson used them as its own names).
+- **Item changes** (POST /api/learner/item): known (held about three months at once), the learner's own meaning (never replaced), retire.
+- **Confidence on reviews**; calibration by topic (lesson title or deck) in the summary.
+- **Language words**: lang and an example sentence from the term check; asked recall → listen → cloze, and produce once stable.
+- **Decks** (data/learner/external/*.json; scripts/sync-bahasa.mts every 30 min on madison, LaunchAgent com.devinthomas.learnharness-bahasa-sync): the Bahasa app's 1,043 cards (202 studied there, 618 with a Lingua Libre recording) with its FSRS schedule as the baseline; reviews here go on top and are written back to its progress gist (backup first, ~/backups/bahasa-gist/). Deck-only words have their own queue (?deck=bahasa) and stay out of the lessons' queue, glossary and weekly digest; a language lesson's profile names what the deck holds.
+- **Opening a lesson** (GET /api/learner/lesson/[id]): warm-up items; after three hours or more, the recap (cheap model, kept until the lesson moves on); the tutor gets [Returning after …] once.
+- **Map** (GET /api/learner/map) and **vocabulary health** (terms used before they were taught, by week; 27% on real data so far).
