@@ -85,6 +85,10 @@ export interface LessonVocabulary {
 	notedLeeches?: string[];
 	notedUnchecked?: string[];
 	notedDrift?: string[];
+	/** The last message a "returning after a gap" note was given for. */
+	notedReturn?: string;
+	/** The learner-facing recap of where the lesson left off, and the message it was written through. */
+	recap?: { through: string; text: string };
 }
 
 export interface ChatParent {

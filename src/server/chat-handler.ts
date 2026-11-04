@@ -422,6 +422,7 @@ export async function handleChatInput(
 				if (mark.leeches) v.notedLeeches = mark.leeches;
 				if (mark.unchecked) v.notedUnchecked = mark.unchecked;
 				if (mark.drift) v.notedDrift = mark.drift;
+				if (mark.returned) v.notedReturn = mark.returned;
 			});
 		} catch (err) {
 			console.error(`[chat ${chatId}] learner-notes bookkeeping failed:`, err);
@@ -677,6 +678,7 @@ export async function handleChatInput(
 				if (!requestCycle || requestCycle.dispatched) {
 					triggerVocabularyCheck(chatId, {
 						chatStore: stores.chatStore,
+						graphStore: stores.graphStore,
 						engine: () => resolveEngine("auditor"),
 						canStart: (provider) => providerKeyPresent(provider) && connectionBackgroundAllowed(provider),
 					}, record.kind !== "practice" && teaching);

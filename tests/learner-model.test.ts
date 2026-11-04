@@ -259,7 +259,8 @@ describe("notes from the learner model", () => {
 		assert.match(all, /\[Learner profile\][\s\S]*gradient/);
 		assert.match(all, /\[Unchecked steps\][\s\S]*"Gradient"/);
 		assert.match(all, /\[Term drift\][\s\S]*taught as a direction; now used as a number/);
-		chatStore.updateVocabulary!(id, (v) => { v.profiled = true; v.notedUnchecked = notes.mark.unchecked; v.notedDrift = notes.mark.drift; });
+		// (the record's stamps are from 1970: a return after a break is named once too — tests/learner-model-2 covers it)
+		chatStore.updateVocabulary!(id, (v) => { v.profiled = true; v.notedUnchecked = notes.mark.unchecked; v.notedDrift = notes.mark.drift; v.notedReturn = "a4"; });
 		const again = L.learnerNotes(L.learnerState(deps), { ...chatStore.getChat(id)!, messages: r.messages }, true);
 		assert.deepEqual(again.sections, []);
 	});

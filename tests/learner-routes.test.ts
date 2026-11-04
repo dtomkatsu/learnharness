@@ -26,6 +26,9 @@ const review = await import("../app/api/learner/review/route.ts");
 const overrule = await import("../app/api/learner/review/overrule/route.ts");
 const progress = await import("../app/api/learner/progress/[id]/route.ts");
 const gloss = await import("../app/api/learner/glossary/route.ts");
+const tidy = await import("../app/api/learner/glossary/tidy/route.ts");
+const lessonRoute = await import("../app/api/learner/lesson/[id]/route.ts");
+const mapRoute = await import("../app/api/learner/map/route.ts");
 const chats = await import("../app/api/chats/route.ts");
 const { piModels } = await import("../src/agent/models.ts");
 const { writeSettings } = await import("../src/store/settings.ts");
@@ -37,6 +40,52 @@ after(() => { process.env = originalEnv; fs.rmSync(directory, { recursive: true,
 
 const get = (url: string) => new Request("http://x" + url);
 const post = (url: string, body: unknown) => new Request("http://x" + url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+describe("the learner routes, second round", () => {
+	const lesson = chatStore.createChat("Attention");
+	store.appendEvidence([
+		{ kind: "taught", itemId: "term:softmax", term: "softmax", gloss: "turns scores into weights that add to 1", chatId: lesson.id } as never,
+		{ kind: "taught", itemId: "term:shape", term: "shape", gloss: "", chatId: lesson.id } as never,
+	]);
+	store.writeExternalDeck({ deck: "bahasa", lang: "id", syncedAt: "x", items: [{ term: "dong", gloss: "come on (insisting)", deck: "bahasa", lang: "id", tags: ["particle"], example: "Ayo dong!", exampleEn: "Come on!", schedule: null }] });
+
+	it("known, retire and the learner's own meaning are recorded from the item route", async () => {
+		const k = await (await item.POST(post("/api/learner/item", { id: "term:softmax", known: true }))).json();
+		assert.equal(k.item.known, true); assert.equal(k.item.status, "solid");
+		await item.POST(post("/api/learner/item", { id: "term:shape", retire: true }));
+		const m = await (await item.POST(post("/api/learner/item", { id: "term:softmax", meaning: "squashes scores into weights" }))).json();
+		assert.equal(m.item.meaning, "squashes scores into weights");
+		const g = await (await gloss.GET(get("/api/learner/glossary?chatId=" + lesson.id))).json();
+		assert.deepEqual(g.terms.map((t: any) => t.term), ["softmax"], "the retired term is gone");
+		const bad = await item.POST(post("/api/learner/item", { id: "term:softmax" }));
+		assert.equal(bad.status, 400);
+	});
+	it("a deck's words have their own queue, with listen and language cards; confidence is kept", async () => {
+		const lessons = await (await review.GET(get("/api/learner/review?limit=20"))).json();
+		assert.equal(lessons.queue.some((q: any) => q.itemId === "term:dong"), false);
+		const deck = await (await review.GET(get("/api/learner/review?deck=bahasa"))).json();
+		const d = deck.queue[0];
+		assert.deepEqual([d.itemId, d.lang, d.deck, d.prompt], ["term:dong", "id", "bahasa", "dong — what does it mean?"]);
+		assert.equal(d.example.sentence, "Ayo dong!");
+		const j = await (await review.POST(post("/api/learner/review", { itemId: "term:dong", mode: "listen", rating: 3, confidence: 60 }))).json();
+		assert.equal(j.answer, "dong — come on (insisting)");
+		const ev = store.readEvidence().find((e: any) => e.id === j.eventId) as any;
+		assert.deepEqual([ev.mode, ev.confidence], ["listen", 60]);
+		const sum = await (await summary.GET(get("/api/learner"))).json();
+		assert.equal(sum.decks.bahasa.words, 1);
+		assert.ok(Array.isArray(sum.calibrationByTopic));
+		assert.equal(typeof sum.vocabulary.taught, "number");
+	});
+	it("the lesson route gives the warm-up; the map lists lessons with a plan; the tidy needs a model", async () => {
+		const r = await (await lessonRoute.GET(get("/x"), { params: Promise.resolve({ id: lesson.id }) })).json();
+		assert.equal(r.returning, false); assert.ok(Array.isArray(r.warmup)); assert.ok(Array.isArray(r.warmupCards));
+		chatStore.saveTree(lesson.id, { version: 1, nodes: [{ id: "s", title: "Softmax" }], edges: [] } as never);
+		const map = await (await mapRoute.GET()).json();
+		assert.deepEqual(map.lessons.map((l: any) => l.title), ["Attention"]);
+		const t = await tidy.POST(post("/api/learner/glossary/tidy", {}));
+		assert.equal(t.status, 503);
+	});
+});
 
 describe("the learner routes", () => {
 	const lesson = chatStore.createChat("Gradient descent");
@@ -65,7 +114,7 @@ describe("the learner routes", () => {
 	});
 	it("items, summary and glossary read the same state", async () => {
 		const list = (await (await items.GET(get("/api/learner/items"))).json()).items;
-		assert.deepEqual(list.map((x: any) => x.label).sort(), ["gradient", "slope"]);
+		assert.deepEqual(list.filter((x: any) => x.lessons.includes(lesson.id)).map((x: any) => x.label).sort(), ["gradient", "slope"]);
 		const s = await (await summary.GET(get("/api/learner"))).json();
 		assert.equal(typeof s.due.fresh, "number"); assert.equal(s.engine, false);
 		const g = (await (await gloss.GET(get("/api/learner/glossary?chatId=" + lesson.id))).json()).terms;

@@ -140,8 +140,8 @@ export const VOCABULARY_CHECK_PROMPT = `You audit one stretch of a tutor\x27s le
 You are given: the terms the learner already holds (taught earlier in the lesson, or known to them), terms the plan schedules for later, what the learner has written, and the tutor\x27s newest teaching.
 
 Find every TECHNICAL term — jargon, notation, named concepts, acronyms — in the tutor\x27s newest teaching, and sort it:
-- "introduced": the newest teaching itself teaches it — gives its meaning in plain words before or as it uses it. Give a one-line gloss.
-- "unexplained": it is used as if the learner already knew it, but it is not in the held list, the learner has not used it themselves, and the teaching does not explain it where it is used. Say briefly where it appears.
+- "introduced": the newest teaching itself teaches it — gives its meaning in plain words before or as it uses it. Give a one-line gloss. When the lesson teaches a FOREIGN LANGUAGE and the term is a word or form of that language, add "lang" (its BCP-47 code, e.g. "id" for Indonesian) and, if the teaching has one, an "example" sentence in that language using it with its English "exampleEn".
+- "unexplained": it is used as if the learner already knew it, but it is not in the held list, the learner has not used it themselves, and the teaching does not explain it where it is used. Say briefly where it appears, and give "meaning": one plain sentence for what it means here (the learner will see it in their glossary).
 - Ignore everyday words, terms in the held list, and terms the learner used first (put those in "learnerUsed").
 
 Be strict about "unexplained" only for words a learner at this level could not be expected to know; when in doubt, leave it out. General school vocabulary (noun, verb, pronoun, prefix, suffix, particle, fraction, probability, average, function…) is NOT unexplained unless the learner showed they lack it; flag the subject's own terms, not the language used to talk about any subject.
@@ -154,11 +154,11 @@ Then, about the LEARNER (only from what they wrote):
 - "misconceptions": for each MISSED or ungraded-wrong answer whose reasoning states a SPECIFIC wrong belief — {"id","term"?,"belief"} (belief: one short sentence, in the learner's terms; term: the held term it is about, if one). Not for blanks or guesses.
 
 Reply with JSON only, no prose:
-{"introduced":[{"term":"…","gloss":"…"}],"unexplained":[{"term":"…","where":"…"}],"learnerUsed":["…"],"usedCorrectly":["…"],"misused":[{"term":"…","how":"…"}],"drift":[{"term":"…","taughtAs":"…","nowAs":"…"}],"verdicts":[{"id":"…","correct":true}],"misconceptions":[{"id":"…","term":"…","belief":"…"}]}`;
+{"introduced":[{"term":"…","gloss":"…","lang":"…"?,"example":"…"?,"exampleEn":"…"?}],"unexplained":[{"term":"…","where":"…","meaning":"…"}],"learnerUsed":["…"],"usedCorrectly":["…"],"misused":[{"term":"…","how":"…"}],"drift":[{"term":"…","taughtAs":"…","nowAs":"…"}],"verdicts":[{"id":"…","correct":true}],"misconceptions":[{"id":"…","term":"…","belief":"…"}]}`;
 
 export interface VocabularyCheckReply {
-	introduced: { term: string; gloss: string }[];
-	unexplained: { term: string; where: string }[];
+	introduced: { term: string; gloss: string; lang?: string; example?: string; exampleEn?: string }[];
+	unexplained: { term: string; where: string; meaning?: string }[];
 	learnerUsed: string[];
 	usedCorrectly: string[];
 	misused: { term: string; how: string }[];
@@ -174,8 +174,8 @@ export function parseVocabularyReply(text: string): VocabularyCheckReply | null 
 	const str = (x: unknown) => (typeof x === "string" ? x.trim() : "");
 	const arr = (x: unknown) => (Array.isArray(x) ? x : []);
 	return {
-		introduced: arr(o.introduced).map((x: any) => ({ term: str(x?.term), gloss: str(x?.gloss) })).filter((x) => x.term).slice(0, 40),
-		unexplained: arr(o.unexplained).map((x: any) => ({ term: str(x?.term), where: str(x?.where) })).filter((x) => x.term).slice(0, 20),
+		introduced: arr(o.introduced).map((x: any) => ({ term: str(x?.term), gloss: str(x?.gloss), ...(/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(str(x?.lang)) ? { lang: str(x?.lang) } : {}), ...(str(x?.example) ? { example: str(x?.example), ...(str(x?.exampleEn) ? { exampleEn: str(x?.exampleEn) } : {}) } : {}) })).filter((x) => x.term).slice(0, 40),
+		unexplained: arr(o.unexplained).map((x: any) => ({ term: str(x?.term), where: str(x?.where), ...(str(x?.meaning) ? { meaning: str(x?.meaning) } : {}) })).filter((x) => x.term).slice(0, 20),
 		learnerUsed: arr(o.learnerUsed).map(str).filter(Boolean).slice(0, 40),
 		usedCorrectly: arr(o.usedCorrectly).map(str).filter(Boolean).slice(0, 40),
 		misused: arr(o.misused).map((x: any) => ({ term: str(x?.term), how: str(x?.how) })).filter((x) => x.term).slice(0, 20),

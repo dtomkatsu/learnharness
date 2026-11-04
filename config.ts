@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,9 +16,15 @@ export const ROOT = path.dirname(fileURLToPath(import.meta.url));
  * byte-for-byte as before. Read-only assets (prompts) stay ROOT-anchored
  * on purpose: they ship inside the app bundle by design.
  */
+// Tests never touch the real data/ (2026-11): several suites write chats, jobs and
+// settings without setting LH_DATA_DIR, and a full run left dozens of fixture
+// chats in a real learner's library. Under NODE_ENV=test with no LH_DATA_DIR,
+// each process gets its own scratch folder instead.
 const DATA_ROOT = process.env.LH_DATA_DIR
 	? path.resolve(process.env.LH_DATA_DIR)
-	: path.join(ROOT, "data");
+	: process.env.NODE_ENV === "test"
+		? fs.mkdtempSync(path.join(os.tmpdir(), "lh-test-data-"))
+		: path.join(ROOT, "data");
 
 export const PATHS = {
 	root: ROOT,

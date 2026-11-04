@@ -23,7 +23,7 @@ import { QUESTION_TOOLS } from "../core/pending.ts";
 import { addFlags, addTerms, heldTerms, normTerm, parseVocabularyReply, VOCABULARY_CHECK_PROMPT, vocabularyCheckInput } from "../core/vocabulary.ts";
 import { termItem, type LearnerEvent } from "../core/learner/model.ts";
 import { appendEvidence, readEvidence } from "../store/learner.ts";
-import { logRecordEvidence, loggedCallIds, missedWithThinking, unjudgedAnswers } from "./learner.ts";
+import { logRecordEvidence, loggedCallIds, missedWithThinking, tidySoon, unjudgedAnswers } from "./learner.ts";
 
 export interface VocabularyCheckDeps {
 	chatStore: ChatStore;
@@ -133,8 +133,12 @@ export async function runVocabularyCheck(chatId: string, deps: VocabularyCheckDe
 	});
 	if (reply) {
 		const out: Omit<LearnerEvent, "id" | "at">[] = [];
-		for (const t of reply.introduced) out.push({ kind: "taught", itemId: termItem(t.term), term: t.term, gloss: t.gloss, chatId, messageId: lastAssistant.id } as never);
-		for (const u of reply.unexplained) if (!held.has(normTerm(u.term))) out.push({ kind: "used-early", itemId: termItem(u.term), term: u.term, chatId, messageId: lastAssistant.id } as never);
+		for (const t of reply.introduced) out.push({ kind: "taught", itemId: termItem(t.term), term: t.term, gloss: t.gloss, chatId, messageId: lastAssistant.id, ...(t.lang ? { lang: t.lang } : {}), ...(t.example ? { example: t.example, ...(t.exampleEn ? { exampleEn: t.exampleEn } : {}) } : {}) } as never);
+		for (const u of reply.unexplained) if (!held.has(normTerm(u.term))) {
+			out.push({ kind: "used-early", itemId: termItem(u.term), term: u.term, chatId, messageId: lastAssistant.id } as never);
+			// a meaning for the glossary until the lesson gives one (a later "taught" gloss replaces it)
+			if (u.meaning) out.push({ kind: "meaning", itemId: termItem(u.term), meaning: u.meaning.slice(0, 400), source: "model" } as never);
+		}
 		const isHeld = (t: string) => held.has(normTerm(t)) || reply.introduced.some((x) => normTerm(x.term) === normTerm(t));
 		for (const t of reply.usedCorrectly) if (isHeld(t)) out.push({ kind: "use", itemId: termItem(t), term: t, correct: true, chatId } as never);
 		for (const m of reply.misused) if (isHeld(m.term)) out.push({ kind: "use", itemId: termItem(m.term), term: m.term, correct: false, how: m.how, chatId } as never);
@@ -147,6 +151,7 @@ export async function runVocabularyCheck(chatId: string, deps: VocabularyCheckDe
 			if (items.length) out.push({ kind: "misconception", items, belief: m.belief, chatId, ...(m.id ? { toolCallId: m.id } : {}) } as never);
 		}
 		appendEvidence(out as never);
+		if (deps.graphStore && (reply.introduced.length || reply.unexplained.length)) tidySoon({ chatStore: deps.chatStore, graphStore: deps.graphStore }, deps.engine());
 	}
 	if (!reply) console.info(`[chat ${chatId}] vocabulary check: unreadable reply (${text.slice(0, 120)})`);
 	return !!reply;

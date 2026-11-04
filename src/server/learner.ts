@@ -13,10 +13,10 @@ import { QUESTION_TOOLS } from "../core/pending.ts";
 import { normTerm } from "../core/vocabulary.ts";
 import { isDue } from "../core/learner/fsrs.ts";
 import {
-	deriveLearner, effectiveRetrievability, lessonProgress, nodeItem, profileText, relatedItems, reviewQueue, termItem, uncheckedBefore,
+	deriveLearner, effectiveRetrievability, isJunkTerm, lessonProgress, nodeItem, profileText, relatedItems, reviewQueue, termItem, uncheckedBefore,
 	type ItemId, type ItemState, type LearnerEvent, type LearnerState, type ReviewMode,
 } from "../core/learner/model.ts";
-import { appendEvidence, hasCardMode, readCards, readEvidence, writeCards, type Card, type CardFace } from "../store/learner.ts";
+import { appendEvidence, hasCardMode, readCards, readEvidence, readExternal, readTidied, writeCards, writeTidied, type Card, type CardFace } from "../store/learner.ts";
 import type { Rating } from "../core/learner/fsrs.ts";
 
 export interface LearnerDeps {
@@ -28,7 +28,7 @@ const QUESTIONS = new Set<string>(QUESTION_TOOLS);
 
 export function learnerState(deps: LearnerDeps, now = Date.now()): LearnerState {
 	const lessonTitles = new Map(deps.chatStore.listChats().map((c) => [c.id, c.title]));
-	return deriveLearner(readEvidence(), { nodes: deps.graphStore.readNodes(), chains: deps.graphStore.readChains(), lessonTitles }, now);
+	return deriveLearner(readEvidence(), { nodes: deps.graphStore.readNodes(), chains: deps.graphStore.readChains(), lessonTitles, external: readExternal() }, now);
 }
 
 // ─── evidence from the record (deterministic) ────────────────────────────────
@@ -130,8 +130,14 @@ Write, per item:
 - "elaboration": only when lapses ≥ 2 — re-derive it from something more basic the learner would accept, in the spirit of "how could I have discovered this?" (3–5 sentences).
 - "hook": only when lapses ≥ 3 — one memory hook: a vivid image, a contrast pair, or an etymology that is TRUE. Never invent etymology.
 
+An item with "lang" is a WORD OF A LANGUAGE the learner is learning (lang is its BCP-47 code; the learner's own language is English). For those:
+- "recall": prompt = the word itself in that language, asking what it means in English (no translation in the prompt); answer = the English meaning, with usage notes if any (register, particle force).
+- "produce": ALWAYS — prompt = "How do you say … ?" with the English meaning and, if helpful, a tiny situation; answer = the word in that language.
+- "example": ALWAYS — a short natural sentence in that language using the word ("sentence") and its English translation ("translation"). Use the one given if there is one; otherwise write an everyday one.
+- "cloze": the example sentence with the word replaced by "____" (prompt, followed by the English translation in brackets); answer = the word.
+
 Plain words; one idea per card; no answer may be guessable from its prompt. Reply with JSON only:
-{"cards":[{"id":"…","meaning":"…","recall":{"prompt":"…","answer":"…"},"produce":{…}?,"why":{…}?,"cloze":{…}?,"discriminate":{"prompt":"…","answer":"…","with":"…"}?,"elaboration":"…"?,"hook":"…"?}]}`;
+{"cards":[{"id":"…","meaning":"…","recall":{"prompt":"…","answer":"…"},"produce":{…}?,"why":{…}?,"cloze":{…}?,"discriminate":{"prompt":"…","answer":"…","with":"…"}?,"elaboration":"…"?,"hook":"…"?,"example":{"sentence":"…","translation":"…"}?}]}`;
 
 function jsonOf(text: string): any {
 	const m = /\{[\s\S]*\}/.exec(text); if (!m) return null;
@@ -142,12 +148,22 @@ const face = (x: any): CardFace | undefined => (x && typeof x.prompt === "string
 /** The card an item can always be asked with, model or not. */
 export function fallbackCard(it: ItemState): Card {
 	const meaning = it.meaning || "(no meaning recorded yet)";
+	const ex = it.example ? { sentence: it.example, translation: it.exampleEn ?? "" } : undefined;
+	const blank = ex && it.lang ? blankOut(ex.sentence, it.label) : null;
 	return {
 		itemId: it.id, meaning,
-		recall: { prompt: it.kind === "term" ? `What does “${it.label}” mean?` : `What do you know about: ${it.label}?`, answer: meaning },
-		...(it.kind === "term" && it.meaning ? { produce: { prompt: it.meaning, answer: it.label } } : {}),
+		recall: { prompt: it.lang ? `${it.label} — what does it mean?` : it.kind === "term" ? `What does “${it.label}” mean?` : `What do you know about: ${it.label}?`, answer: meaning },
+		...(it.kind === "term" && it.meaning ? { produce: { prompt: it.lang ? `How do you say “${it.meaning}”?` : it.meaning, answer: it.label } } : {}),
+		...(blank ? { cloze: { prompt: `${blank}${ex!.translation ? ` (${ex!.translation})` : ""}`, answer: it.label } } : {}),
+		...(ex ? { example: ex } : {}),
 		lapsesAt: it.lapses, generatedAt: new Date(0).toISOString(),
 	};
+}
+
+/** The sentence with the word replaced by ____, or null when the word is not in it as written. */
+function blankOut(sentence: string, word: string): string | null {
+	const i = sentence.toLowerCase().indexOf(word.toLowerCase());
+	return i < 0 ? null : sentence.slice(0, i) + "____" + sentence.slice(i + word.length);
 }
 
 /** Cards that need (re)writing: none yet, or more lapses than when written (elaboration at 2, hook at 3). */
@@ -156,6 +172,7 @@ export function cardsNeeded(state: LearnerState, ids: readonly ItemId[], cards =
 		const it = state.items.get(id); if (!it) return false;
 		const c = cards[id];
 		if (!c || c.generatedAt === new Date(0).toISOString()) return true;
+		if (it.lang && (!c.produce || !c.example)) return true;
 		return (it.lapses >= 2 && !c.elaboration) || (it.lapses >= 3 && !c.hook) || (it.misconceptions.length > 0 && !c.discriminate);
 	});
 }
@@ -164,7 +181,8 @@ export async function generateCards(deps: LearnerDeps, state: LearnerState, ids:
 	const items = ids.map((id) => state.items.get(id)).filter((x): x is ItemState => !!x).slice(0, 10);
 	if (!items.length) return [];
 	const lines = items.map((it) => JSON.stringify({
-		id: it.id, kind: it.kind, label: it.label, meaning: it.meaning,
+		id: it.id, kind: it.kind, label: it.label, meaning: it.meaning, ...(it.lang ? { lang: it.lang } : {}),
+		...(it.example ? { example: { sentence: it.example, translation: it.exampleEn ?? "" } } : {}),
 		premises: it.premises.map((p) => state.items.get(p)).filter(Boolean).map((p) => `${p!.label}: ${p!.meaning}`),
 		wrongBeliefs: it.misconceptions.map((m) => m.belief), lapses: it.lapses,
 		context: context(it).slice(0, 1500),
@@ -184,6 +202,7 @@ export async function generateCards(deps: LearnerDeps, state: LearnerState, ids:
 			...(disc && typeof c.discriminate.with === "string" ? { discriminate: { ...disc, with: c.discriminate.with } } : {}),
 			...(typeof c.elaboration === "string" && c.elaboration.trim() ? { elaboration: c.elaboration.trim() } : cards[it.id]?.elaboration ? { elaboration: cards[it.id]!.elaboration } : {}),
 			...(typeof c.hook === "string" && c.hook.trim() ? { hook: c.hook.trim() } : cards[it.id]?.hook ? { hook: cards[it.id]!.hook } : {}),
+			...(c.example && typeof c.example.sentence === "string" && c.example.sentence.trim() ? { example: { sentence: c.example.sentence.trim(), translation: String(c.example.translation ?? "").trim() } } : it.example ? { example: { sentence: it.example, translation: it.exampleEn ?? "" } } : {}),
 			lapsesAt: it.lapses, generatedAt: new Date().toISOString(),
 		};
 		written.push(it.id);
@@ -223,16 +242,25 @@ export async function gradeAnswer(face: CardFace, response: string, engine: PiEn
 }
 
 /** Records a review; a model belief becomes a misconception on the item. */
-export function recordReview(itemId: ItemId, mode: ReviewMode, rating: Rating, graded: "model" | "self", extra: { response?: string; reason?: string; belief?: string; overrules?: string; chatId?: string } = {}): LearnerEvent[] {
-	const ev: Omit<LearnerEvent, "id" | "at">[] = [{ kind: "review", itemId, mode, rating, graded, ...(extra.response ? { response: extra.response.slice(0, 2000) } : {}), ...(extra.reason ? { reason: extra.reason } : {}), ...(extra.overrules ? { overrules: extra.overrules } : {}) } as never];
+export function recordReview(itemId: ItemId, mode: ReviewMode, rating: Rating, graded: "model" | "self", extra: { response?: string; reason?: string; belief?: string; overrules?: string; chatId?: string; confidence?: number } = {}): LearnerEvent[] {
+	const conf = extra.confidence != null && Number.isFinite(extra.confidence) ? Math.max(0, Math.min(100, Math.round(extra.confidence))) : undefined;
+	const ev: Omit<LearnerEvent, "id" | "at">[] = [{ kind: "review", itemId, mode, rating, graded, ...(extra.response ? { response: extra.response.slice(0, 2000) } : {}), ...(extra.reason ? { reason: extra.reason } : {}), ...(extra.overrules ? { overrules: extra.overrules } : {}), ...(conf != null ? { confidence: conf } : {}) } as never];
 	if (extra.belief && rating <= 2) ev.push({ kind: "misconception", items: [itemId], belief: extra.belief, chatId: extra.chatId ?? "" } as never);
 	return appendEvidence(ev as never);
 }
 
 // ─── what the queue and the views read ──────────────────────────────────────
 
+/** The face a card is asked with in a mode (listen: the word is spoken, its meaning is the answer). */
+export function cardFace(c: Card, mode: ReviewMode, it: ItemState): CardFace & { mode: ReviewMode; speak?: string } {
+	if (mode === "listen") return { mode, prompt: "Listen — what does it mean?", answer: `${it.label} — ${c.recall.answer}`, speak: it.label };
+	const f = (c as unknown as Record<string, CardFace | undefined>)[mode];
+	return f && typeof f.prompt === "string" ? { mode, ...f } : { mode: "recall", ...c.recall };
+}
+
 export function itemView(state: LearnerState, it: ItemState, cards: Record<ItemId, Card> = readCards()) {
 	const c = cards[it.id];
+	const ex = c?.example ?? (it.example ? { sentence: it.example, translation: it.exampleEn ?? "" } : null);
 	return {
 		id: it.id, kind: it.kind, label: it.label, meaning: c?.meaning || it.meaning, status: it.status,
 		retrievability: it.retrievability, effective: effectiveRetrievability(it),
@@ -241,17 +269,22 @@ export function itemView(state: LearnerState, it: ItemState, cards: Record<ItemI
 		stabilityDays: it.schedule.state ? Math.round(it.schedule.stability * 10) / 10 : null,
 		reps: it.schedule.reps, lapses: it.lapses, lessons: it.lessons, asked: it.asked, usedEarly: it.usedEarly,
 		misconceptions: it.misconceptions, drift: it.drift, lastSeen: it.lastSeen,
+		aliases: it.aliases, ...(it.lang ? { lang: it.lang } : {}), ...(it.deck ? { deck: it.deck, tags: it.tags ?? [] } : {}),
+		...(it.audio ? { audio: it.audio } : {}), ...(it.known ? { known: true } : {}), ...(it.meaningSource ? { meaningSource: it.meaningSource } : {}),
+		...(ex ? { example: ex } : {}),
 	};
 }
 
-export function queueView(state: LearnerState, opts: { limit?: number; only?: Set<ItemId>; newPerDay?: number } = {}) {
+export function queueView(state: LearnerState, opts: { limit?: number; only?: Set<ItemId>; newPerDay?: number; deck?: string } = {}) {
 	const cards = readCards();
 	return reviewQueue(state, { ...opts, hasMode: hasCardMode(cards) }).map((q) => {
 		const it = state.items.get(q.itemId)!;
 		const c = cards[q.itemId] ?? fallbackCard(it);
-		const f = (c[q.mode] as CardFace | undefined) ?? c.recall;
+		const f = cardFace(c, q.mode, it);
 		return {
-			...q, mode: c[q.mode] ? q.mode : "recall", label: it.label, kind: it.kind, prompt: f.prompt, answer: f.answer,
+			...q, mode: f.mode, label: it.label, kind: it.kind, prompt: f.prompt, answer: f.answer, ...(f.speak ? { speak: f.speak } : {}),
+			...(it.lang ? { lang: it.lang } : {}), ...(it.audio ? { audio: it.audio } : {}), ...(it.deck ? { deck: it.deck } : {}),
+			...(c.example ? { example: c.example } : {}),
 			...(it.lapses >= 2 && c.elaboration ? { elaboration: c.elaboration } : {}),
 			...(it.lapses >= 3 && c.hook ? { hook: c.hook } : {}),
 			...(q.mode === "discriminate" && c.discriminate ? { with: c.discriminate.with } : {}),
@@ -279,7 +312,7 @@ export function currentPlanNode(r: ChatRecord): string | null {
 	return null;
 }
 
-export interface LearnerNotes { sections: string[]; mark: { profiled?: boolean; leeches?: string[]; unchecked?: string[]; drift?: string[]; dueTurn?: number } }
+export interface LearnerNotes { sections: string[]; mark: { profiled?: boolean; leeches?: string[]; unchecked?: string[]; drift?: string[]; dueTurn?: number; returned?: string } }
 
 /**
  * The learner-model sections of a turn's lesson notes: the profile (once per
@@ -295,6 +328,9 @@ export function learnerNotes(state: LearnerState, record: ChatRecord, teaching: 
 		const p = profileText(state, topic, record.id);
 		if (p) sections.push(p);
 		mark.profiled = true;
+	} else {
+		const back = returnNote(state, record);
+		if (back) { sections.push(back.text); mark.returned = back.through; }
 	}
 	if (!teaching) return { sections, mark };
 	const turn = (v?.noteTurns ?? 0) + 1; mark.dueTurn = turn;
@@ -392,3 +428,198 @@ export function backfillEvidence(deps: LearnerDeps): number {
 }
 
 export { termItem, nodeItem };
+
+// ─── the glossary tidy ──────────────────────────────────────────────────────
+
+const TIDY_PROMPT = `You tidy a learner's glossary — the terms an app recorded from their lessons.
+
+You get every term in the glossary (for context) and a list TO REVIEW, each with its id, the term, its meaning (may be empty), the lesson's title, and how often the lesson used it before teaching it.
+
+For each term TO REVIEW decide:
+- "retire" it when it is not a term worth remembering for that subject: an everyday word the recorder picked up ("shape", "shares", "neighbor" used in its plain sense), a lone variable or letter, or a fragment of a phrase. When in doubt, keep it.
+- "merge" it into another glossary term when the two name the same thing (a synonym, an abbreviation, or a short form of the same name — "mask" and "causal mask" when both mean the causal mask). Merge into the clearer standard name. Never merge related-but-different ideas.
+- give a "meaning" when its meaning is empty and it is kept: one plain, correct sentence for what it means in that lesson's subject.
+
+Reply with JSON only: {"retire":[{"id":"…","reason":"…"}],"merge":[{"from":"…","into":"…"}],"meanings":[{"id":"…","meaning":"…"}]}`;
+
+let tidying = false;
+
+/**
+ * Looks at glossary terms not looked at yet: lone letters and numbers are
+ * retired by rule; the cheap model retires everyday words, merges duplicates
+ * and gives the never-explained ones a meaning. Each judgment is evidence
+ * (retire / merge / meaning), so it can be taken back. `all` re-reviews every term.
+ */
+export async function tidyGlossary(deps: LearnerDeps, engine: PiEngine | undefined, opts: { all?: boolean } = {}): Promise<{ reviewed: number; retired: number; merged: number; meanings: number }> {
+	const out = { reviewed: 0, retired: 0, merged: 0, meanings: 0 };
+	if (tidying) return out;
+	tidying = true;
+	try {
+		const state = learnerState(deps);
+		const tidied = opts.all ? new Set<ItemId>() : readTidied();
+		const terms = [...state.items.values()].filter((it) => it.kind === "term" && it.reviewable && !it.retired && !it.deck);
+		const todo = terms.filter((it) => !tidied.has(it.id));
+		if (!todo.length) return out;
+		const ev: Omit<LearnerEvent, "id" | "at">[] = [];
+		const rest: ItemState[] = [];
+		for (const it of todo) {
+			if (isJunkTerm(it.label)) { ev.push({ kind: "retire", itemId: it.id, on: true, reason: "a lone letter or number" } as never); out.retired++; tidied.add(it.id); }
+			else rest.push(it);
+		}
+		const known = new Set(terms.map((t) => t.id));
+		for (let i = 0; engine && i < rest.length; i += 60) {
+			const batch = rest.slice(i, i + 60);
+			const title = (it: ItemState) => it.lessons.map((l) => state.lessonTitles.get(l) ?? "").filter(Boolean)[0] ?? "";
+			const prompt = [
+				"ALL GLOSSARY TERMS: " + terms.map((t) => t.label).join(", "),
+				"",
+				"TO REVIEW:",
+				...batch.map((it) => JSON.stringify({ id: it.id, term: it.label, meaning: it.meaning, lesson: title(it).slice(0, 80), usedBeforeTaught: it.usedEarly })),
+			].join("\n");
+			const { text } = await runSubagent([], { role: "auditor", engine, systemPrompt: TIDY_PROMPT, prompt, maxTurns: 1 });
+			const j = jsonOf(text);
+			if (!j) continue;
+			const inBatch = new Set(batch.map((b) => b.id));
+			const gone = new Set<ItemId>();
+			for (const r of Array.isArray(j.retire) ? j.retire : []) if (inBatch.has(r?.id)) { ev.push({ kind: "retire", itemId: r.id, on: true, ...(r.reason ? { reason: String(r.reason).slice(0, 200) } : {}) } as never); gone.add(r.id); out.retired++; }
+			for (const m of Array.isArray(j.merge) ? j.merge : []) {
+				if (!inBatch.has(m?.from) || !known.has(m?.into) || m.from === m.into || gone.has(m.from) || gone.has(m.into)) continue;
+				ev.push({ kind: "merge", from: m.from, into: m.into } as never); gone.add(m.from); out.merged++;
+			}
+			for (const m of Array.isArray(j.meanings) ? j.meanings : []) {
+				const it = state.items.get(m?.id);
+				if (!it || !inBatch.has(it.id) || gone.has(it.id) || it.meaning || typeof m.meaning !== "string" || !m.meaning.trim()) continue;
+				ev.push({ kind: "meaning", itemId: it.id, meaning: m.meaning.trim().slice(0, 400), source: "model" } as never); out.meanings++;
+			}
+			for (const b of batch) tidied.add(b.id);
+			out.reviewed += batch.length;
+		}
+		appendEvidence(ev as never);
+		writeTidied(tidied);
+		return out;
+	} finally { tidying = false; }
+}
+
+/** The tidy in the background (after a vocabulary check, or when the glossary is opened). */
+export function tidySoon(deps: LearnerDeps, engine: PiEngine | undefined): void {
+	if (process.env.NODE_ENV === "test" || !engine) return;
+	void tidyGlossary(deps, engine).catch((err) => console.error("[learner] glossary tidy failed:", err));
+}
+
+// ─── starting a lesson: the warm-up and the recap ──────────────────────────
+
+/** A lesson resumed after this long is a return: warm up, and recap where it was. */
+export const RETURN_GAP_MS = 3 * 3600000;
+
+const msgTime = (m: unknown) => Number((m as { timestamp?: number }).timestamp) || 0;
+const lastStamp = (r: ChatRecord) => { for (let i = r.messages.length - 1; i >= 0; i--) { const t = msgTime(r.messages[i]); if (t) return { t, id: r.messages[i]!.id }; } return null; };
+
+/** Warm-up items for opening a lesson: due or fading items related to it, else this lesson's own weakest. */
+export function warmupItems(state: LearnerState, record: ChatRecord, max = 3): ItemId[] {
+	const ids = lessonRecall(state, record, max);
+	if (ids.length >= 2) return ids;
+	const own = [...state.items.values()]
+		.filter((it) => it.lessons.includes(record.id) && it.reviewable && !it.retired && it.schedule.state !== 0 && it.status !== "suspended" && it.status !== "leech" && !ids.includes(it.id))
+		.filter((it) => (effectiveRetrievability(it) ?? 1) < 0.92)
+		.sort((a, b) => (effectiveRetrievability(a) ?? 1) - (effectiveRetrievability(b) ?? 1));
+	return [...ids, ...own.map((it) => it.id)].slice(0, max);
+}
+
+const RECAP_PROMPT = `You write the "where we left off" note a learner sees when they come back to a lesson after a break.
+
+From the end of the lesson transcript given, write 2–3 plain sentences addressed to the learner as "you": what was just being worked on, the last thing they got right or wrong if it matters, and what comes next. No greeting, no preamble, no praise. Reply with the sentences only.`;
+
+const textOf = (m: unknown) => {
+	const x = m as { role?: string; content?: Block[] | string };
+	if (x.role !== "assistant" && x.role !== "user") return "";
+	const c = x.content ?? [];
+	return (typeof c === "string" ? c : c.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n")).trim();
+};
+
+export interface LessonStart {
+	returning: boolean;
+	/** Hours since the lesson's last message. */
+	gapHours: number | null;
+	/** The last message when it was opened — what a "warmed up for this return" mark keys on. */
+	through: string | null;
+	warmup: ItemId[];
+	recap: { lastStep: string | null; done: string[]; faded: string[]; summary: string | null } | null;
+}
+
+/** What opening a lesson shows: the warm-up, and after a break the recap (its summary written once by the cheap model, then kept). */
+export async function lessonStart(deps: LearnerDeps, state: LearnerState, record: ChatRecord, engine: PiEngine | undefined): Promise<LessonStart> {
+	const last = lastStamp(record);
+	const gap = last ? state.now - last.t : null;
+	const returning = gap != null && gap >= RETURN_GAP_MS;
+	const warmup = record.kind === "practice" ? [] : warmupItems(state, record);
+	if (!returning || !last) return { returning, gapHours: gap == null ? null : Math.round(gap / 360000) / 10, through: last?.id ?? null, warmup, recap: null };
+	const cur = currentPlanNode(record);
+	const title = (id: string) => record.tree?.nodes.find((n) => n.id === id)?.title ?? id;
+	const prog = record.tree ? lessonProgress(state, record.id, record.tree) : null;
+	const done = prog ? prog.nodes.filter((n) => n.status === "checked" || n.status === "repaired").map((n) => n.title).slice(-4) : [];
+	const faded = [...state.items.values()].filter((it) => it.lessons.includes(record.id) && !it.retired && it.schedule.state !== 0 && (effectiveRetrievability(it) ?? 1) < 0.8)
+		.sort((a, b) => (effectiveRetrievability(a) ?? 1) - (effectiveRetrievability(b) ?? 1)).slice(0, 6).map((it) => it.label);
+	let summary = record.vocabulary?.recap?.through === last.id ? record.vocabulary.recap.text : null;
+	if (!summary && engine) {
+		const tail = (record.messages as LhMessage[]).map((m) => ({ role: (m as { role?: string }).role, t: textOf(m) })).filter((x) => x.t).slice(-12)
+			.map((x) => `${x.role === "user" ? "LEARNER" : "TUTOR"}: ${x.t.slice(0, 1500)}`).join("\n\n");
+		try {
+			const { text } = await runSubagent([], { role: "auditor", engine, systemPrompt: RECAP_PROMPT, prompt: `LESSON: ${record.title}\n${cur ? `CURRENT STEP: ${title(cur)}\n` : ""}\n${tail}`, maxTurns: 1, chatId: record.id });
+			summary = text.trim().slice(0, 800) || null;
+			if (summary) deps.chatStore.updateVocabulary?.(record.id, (v) => { v.recap = { through: last.id, text: summary! }; });
+		} catch (err) { console.error(`[chat ${record.id}] recap failed:`, err); }
+	}
+	return { returning, gapHours: Math.round(gap! / 360000) / 10, through: last.id, warmup, recap: { lastStep: cur ? title(cur) : null, done, faded, summary } };
+}
+
+/** The tutor's note for a learner coming back after a gap: where it stood, what faded, how the warm-up went. */
+export function returnNote(state: LearnerState, record: ChatRecord): { text: string; through: string } | null {
+	const last = lastStamp(record);
+	if (!last || state.now - last.t < RETURN_GAP_MS || record.vocabulary?.notedReturn === last.id) return null;
+	const gapH = (state.now - last.t) / 3600000;
+	const away = gapH >= 48 ? `${Math.round(gapH / 24)} days` : `${Math.round(gapH)} hours`;
+	const cur = currentPlanNode(record);
+	const step = cur ? record.tree?.nodes.find((n) => n.id === cur)?.title ?? null : null;
+	const mine = [...state.items.values()].filter((it) => it.lessons.includes(record.id) && !it.retired);
+	const faded = mine.filter((it) => it.schedule.state !== 0 && (effectiveRetrievability(it) ?? 1) < 0.8).map((it) => it.label).slice(0, 8);
+	const since = new Date(last.t).toISOString();
+	const warm = state.events.filter((e): e is Extract<LearnerEvent, { kind: "review" }> => e.kind === "review" && e.at > since && mine.some((it) => it.id === e.itemId))
+		.map((e) => `${state.items.get(e.itemId)?.label ?? e.itemId}: ${e.rating >= 3 ? "recalled" : "missed"}`);
+	const lines = [`[Returning after ${away}] — the learner is coming back to this lesson after a break.`];
+	if (step) lines.push(`It stood at the step "${step}".`);
+	if (faded.length) lines.push(`Likely faded since (low recall now): ${faded.join(", ")}.`);
+	if (warm.length) lines.push(`Warm-up just now: ${warm.join("; ")}.`);
+	lines.push("Open by reconnecting in one or two sentences — where you were, and a quick check of anything faded that the next step rests on — before going on.");
+	return { text: lines.join(" "), through: last.id };
+}
+
+// ─── the knowledge map ──────────────────────────────────────────────────────
+
+export function knowledgeMap(deps: LearnerDeps, state: LearnerState) {
+	const canon = (id: ItemId) => { let x = id; for (let i = 0; i < 10 && state.aliases.has(x); i++) x = state.aliases.get(x)!; return x; };
+	const brief = (id: ItemId) => {
+		const it = state.items.get(canon(id));
+		return it && !it.retired ? { id: it.id, label: it.label, status: it.status, recall: effectiveRetrievability(it) } : null;
+	};
+	const lessons = deps.chatStore.listChats().map((c) => deps.chatStore.getChat(c.id)).filter((r): r is ChatRecord => !!r && !!r.tree?.nodes.length && r.kind !== "practice" && !r.parent)
+		.map((r) => {
+			const prog = lessonProgress(state, r.id, r.tree);
+			const planned = r.vocabulary?.planned ?? {};
+			const cur = currentPlanNode(r);
+			return {
+				id: r.id, title: r.title,
+				steps: prog.nodes.map((n) => ({
+					id: n.id, title: n.title, status: n.status, checks: n.checks, current: n.id === cur,
+					terms: (planned[n.id]?.introduces ?? []).map((t) => brief(termItem(t))).filter(Boolean),
+					needs: (planned[n.id]?.needs ?? []).map((t) => brief(termItem(t))).filter(Boolean),
+				})),
+				edges: r.tree!.edges,
+				next: prog.frontier.map((id) => r.tree!.nodes.find((n) => n.id === id)?.title ?? id),
+			};
+		});
+	const chains = deps.graphStore.readChains().map((c) => ({ premises: c.premises.map((p) => brief(nodeItem(p))).filter(Boolean), conclusion: brief(nodeItem(c.conclusion)) })).filter((c) => c.conclusion && c.premises.length);
+	const held = (s: string | undefined) => s === "learning" || s === "solid";
+	const ready = [...state.items.values()].filter((it) => it.kind === "node" && it.status === "new" && it.premises.length && it.premises.every((p) => held(state.items.get(p)?.status)))
+		.slice(0, 12).map((it) => ({ id: it.id, label: it.label }));
+	return { lessons, chains, ready };
+}

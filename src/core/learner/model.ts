@@ -28,7 +28,8 @@ export type ItemId = string;
 export const termItem = (term: string): ItemId => "term:" + normTerm(term);
 export const nodeItem = (id: string): ItemId => "node:" + id;
 
-export type ReviewMode = "recall" | "produce" | "why" | "cloze" | "discriminate";
+/** listen: the prompt is the word spoken (language words). */
+export type ReviewMode = "recall" | "produce" | "why" | "cloze" | "discriminate" | "listen";
 
 interface EventBase { id: string; at: string }
 
@@ -59,10 +60,19 @@ export type LearnerEvent =
 	| (EventBase & { kind: "verdict"; toolCallId: string; outcome: "correct" | "miss" })
 	/** A practice problem concluded — its targets are graph propositions. */
 	| (EventBase & { kind: "practice"; chatId: string; toolCallId: string; items: ItemId[]; outcome: string; rung?: string | null; missClass?: string | null })
-	/** A review in the review queue. `overrules` names a review whose rating this one replaces. */
-	| (EventBase & { kind: "review"; itemId: ItemId; mode: ReviewMode; rating: Rating; graded: "model" | "self"; response?: string; reason?: string; overrules?: string })
-	/** The lesson taught a term (vocabulary check). */
-	| (EventBase & { kind: "taught"; itemId: ItemId; term: string; gloss: string; chatId: string; messageId?: string })
+	/** A review in the review queue. `overrules` names a review whose rating this one replaces.
+	 *  `confidence` (0–100) is how sure the learner said they were before seeing the answer. */
+	| (EventBase & { kind: "review"; itemId: ItemId; mode: ReviewMode; rating: Rating; graded: "model" | "self"; response?: string; reason?: string; overrules?: string; confidence?: number })
+	/** The lesson taught a term (vocabulary check). `lang`: BCP-47 code when it is a word of a language being learned. */
+	| (EventBase & { kind: "taught"; itemId: ItemId; term: string; gloss: string; chatId: string; messageId?: string; lang?: string; example?: string; exampleEn?: string })
+	/** Two items are one thing (glossary tidy): `from`'s evidence counts for `into` from now on. */
+	| (EventBase & { kind: "merge"; from: ItemId; into: ItemId })
+	/** Not a real term (an everyday word or a fragment the check picked up) — out of the glossary and review. */
+	| (EventBase & { kind: "retire"; itemId: ItemId; on: boolean; reason?: string })
+	/** A meaning for an item the lesson never explained (glossary tidy), or the learner's own wording. */
+	| (EventBase & { kind: "meaning"; itemId: ItemId; meaning: string; source: "model" | "learner" })
+	/** The learner already knew it before it came up — or takes that back. */
+	| (EventBase & { kind: "known"; itemId: ItemId; on: boolean })
 	/** The lesson used a term before teaching it. */
 	| (EventBase & { kind: "used-early"; itemId: ItemId; term: string; chatId: string; messageId?: string })
 	/** The learner opened a side question about a term. */
@@ -98,7 +108,7 @@ export interface ItemState {
 	/** For propositions: the weakest premise's retrievability (one level down). */
 	weakestPremise?: { id: ItemId; retrievability: number } | null;
 	status: ItemStatus;
-	ratings: { at: string; rating: Rating; source: LearnerEventKind; eventId: string }[];
+	ratings: { at: string; rating: Rating; source: LearnerEventKind | "deck"; eventId: string; produce?: boolean }[];
 	lapses: number;
 	misconceptions: Misconception[];
 	/** Lessons that taught or asked about it. */
@@ -116,10 +126,40 @@ export interface ItemState {
 	solidSince?: string;
 	/** Premises (graph) for "why" cards. */
 	premises: ItemId[];
+	/** Other labels folded into this item (merges). */
+	aliases: string[];
+	/** BCP-47 code of the language it is a word of, when it is one being learned. */
+	lang?: string;
+	/** An example sentence using it (and its translation), for language words. */
+	example?: string;
+	exampleEn?: string;
+	/** The deck it came from when it lives in another app's flashcards (e.g. "bahasa"), with that deck's tags and audio. */
+	deck?: string;
+	tags?: string[];
+	audio?: string;
+	/** The learner said they already knew it. */
+	known?: boolean;
+	/** Retired from the glossary and review (not a real term). */
+	retired?: boolean;
+	/** Where the meaning came from when the lesson never gave one. */
+	meaningSource?: "model" | "learner" | "deck";
+}
+
+/** An item that lives in another app's flashcard deck, with that app's schedule (FSRS state as it keeps it). */
+export interface ExternalItem {
+	term: string;
+	gloss: string;
+	deck: string;
+	lang?: string;
+	tags?: string[];
+	example?: string;
+	exampleEn?: string;
+	audio?: string;
+	schedule?: { stability: number; difficulty: number; due: number; lastReview: number; reps: number } | null;
 }
 
 export interface Calibration {
-	/** Quiz answers with a confidence. */
+	/** Quiz answers and reviews with a confidence. */
 	answers: number;
 	/** Mean confidence (0–100) vs. accuracy (0–100). */
 	meanConfidence: number | null;
@@ -129,11 +169,17 @@ export interface Calibration {
 	sureCount: number;
 }
 
+/** One confident-or-not judgment: an in-lesson quiz answer or a review, with what it was about. */
+export interface ConfidencePoint { at: string; confidence: number; correct: boolean; chatId?: string; itemId?: ItemId }
+
 export interface LearnerState {
 	now: number;
 	lessonTitles: Map<string, string>;
 	items: Map<ItemId, ItemState>;
 	calibration: Calibration;
+	confidence: ConfidencePoint[];
+	/** merged-away id → the id it now counts for. */
+	aliases: Map<ItemId, ItemId>;
 	/** Answer events by chat — progress reads these. */
 	answersByChat: Map<string, Extract<LearnerEvent, { kind: "answer" }>[]>;
 	events: LearnerEvent[];
@@ -144,6 +190,28 @@ export interface GraphContext {
 	lessonTitles?: Map<string, string>;
 	nodes: { id: string; name: string; statement: string; provenance: { chatId: string; messageId: string }[]; createdAt?: string }[];
 	chains: { premises: string[]; conclusion: string }[];
+	/** Items from other apps' decks (data/learner/external/*.json). */
+	external?: readonly ExternalItem[];
+}
+
+/** An external deck's schedule as this model's FSRS schedule. */
+function externalSchedule(s: NonNullable<ExternalItem["schedule"]>): Schedule {
+	const day = 86400000;
+	const reviewed = s.reps > 0 && s.stability >= 1;
+	return {
+		due: s.due, stability: s.stability, difficulty: s.difficulty, elapsed_days: 0,
+		scheduled_days: Math.max(0, Math.round((s.due - s.lastReview) / day)), reps: Math.max(1, s.reps), lapses: 0, learning_steps: 0,
+		state: reviewed ? 2 : 1, last_review: s.lastReview,
+	};
+}
+
+/** Rewrites an event's item references through the merge map. */
+function canonEvent(e: LearnerEvent, canon: (id: ItemId) => ItemId): LearnerEvent {
+	const x = e as LearnerEvent & { itemId?: ItemId; items?: ItemId[] };
+	if (x.kind === "merge") return e;
+	if (typeof x.itemId === "string" && canon(x.itemId) !== x.itemId) return { ...x, itemId: canon(x.itemId) } as LearnerEvent;
+	if (Array.isArray(x.items) && x.items.some((i) => canon(i) !== i)) return { ...x, items: [...new Set(x.items.map(canon))] } as LearnerEvent;
+	return e;
 }
 
 const SOLID_STABILITY = 21;
@@ -168,7 +236,12 @@ function practiceRating(outcome: string, rung?: string | null): Rating | null {
 
 /** Replays the evidence into the learner state. Events may arrive in any order; they are sorted by time. */
 export function deriveLearner(rawEvents: readonly LearnerEvent[], graph: GraphContext, now: number): LearnerState {
-	const events = [...rawEvents].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+	const sorted = [...rawEvents].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+	// merges first: every reference to a merged-away item counts for the one it went into
+	const aliases = new Map<ItemId, ItemId>();
+	for (const e of sorted) if (e.kind === "merge" && e.from !== e.into) aliases.set(e.from, e.into);
+	const canon = (id: ItemId): ItemId => { let x = id; for (let i = 0; i < 10 && aliases.has(x); i++) x = aliases.get(x)!; return x; };
+	const events = aliases.size ? sorted.map((e) => canonEvent(e, canon)) : sorted;
 	const overruled = new Set(events.flatMap((e) => (e.kind === "review" && e.overrules ? [e.overrules] : [])));
 	const items = new Map<ItemId, ItemState>();
 	const premisesOf = new Map<string, string[]>();
@@ -187,38 +260,40 @@ export function deriveLearner(rawEvents: readonly LearnerEvent[], graph: GraphCo
 				schedule: createSchedule(Date.parse(at) || now), retrievability: null, status: "new",
 				ratings: [], lapses: 0, misconceptions: [], lessons: [], firstSeen: at, lastSeen: at,
 				reviewable: !!node, priority: node ? 1 : 0, usedEarly: 0, asked: 0, drift: [],
-				premises: node ? (premisesOf.get(node.id) ?? []).map(nodeItem) : [],
+				premises: node ? (premisesOf.get(node.id) ?? []).map(nodeItem) : [], aliases: [],
 			};
 			items.set(id, it);
 		}
 		if (at > it.lastSeen) it.lastSeen = at;
+		if (at < it.firstSeen) it.firstSeen = at;
 		return it;
 	};
 	const lesson = (it: ItemState, chatId: string) => { if (chatId && !it.lessons.includes(chatId)) it.lessons.push(chatId); };
+	const markSolid = (it: ItemState, before: Schedule, next: Schedule, at: string) => {
+		const wasSolid = before.state === 2 && before.stability >= SOLID_STABILITY;
+		const isSolid = next.state === 2 && next.stability >= SOLID_STABILITY;
+		if (isSolid && !wasSolid) it.solidSince = at; else if (!isSolid) delete it.solidSince;
+	};
 	const apply = (it: ItemState, rating: Rating, at: string, source: LearnerEventKind, eventId: string, key: "schedule" | "produce" = "schedule") => {
 		const t = Date.parse(at) || now;
 		it.reviewable = true;
 		const before = it[key] ?? createSchedule(t);
 		const next = rate(before, rating, t);
-		if (key === "schedule") {
-			const wasSolid = it.schedule.state === 2 && it.schedule.stability >= SOLID_STABILITY;
-			const isSolid = next.state === 2 && next.stability >= SOLID_STABILITY;
-			if (isSolid && !wasSolid) it.solidSince = at; else if (!isSolid) delete it.solidSince;
-			it.schedule = next; it.lapses = next.lapses;
-		} else it.produce = next;
-		it.ratings.push({ at, rating, source, eventId });
+		if (key === "schedule") { markSolid(it, before, next, at); it.schedule = next; it.lapses = next.lapses; }
+		else it.produce = next;
+		it.ratings.push({ at, rating, source, eventId, ...(key === "produce" ? { produce: true } : {}) });
 		if (rating >= 3) for (const m of it.misconceptions) if (!m.resolvedAt && m.at < at) m.resolvedAt = at;
 	};
 	const answers = new Map<string, Extract<LearnerEvent, { kind: "answer" }>>();
 	const answersByChat = new Map<string, Extract<LearnerEvent, { kind: "answer" }>[]>();
 	const suspended = new Set<ItemId>();
-	const cal = { n: 0, conf: 0, right: 0, sure: 0, sureWrong: 0 };
+	const confidence: ConfidencePoint[] = [];
 
 	const answerItems = (e: Extract<LearnerEvent, { kind: "answer" }>) => {
 		const nodes = new Set<string>(nodesByMessage.get(e.messageId) ?? []);
 		// the teaching before the question, nearest first, at most 4 propositions in all
 		for (const m of [...(e.context ?? [])].reverse()) { if (nodes.size >= 4) break; for (const id of nodesByMessage.get(m) ?? []) if (nodes.size < 4) nodes.add(id); }
-		return [...new Set([...e.items, ...[...nodes].map(nodeItem)])];
+		return [...new Set([...e.items.map(canon), ...[...nodes].map(nodeItem)])];
 	};
 	const rateAnswer = (e: Extract<LearnerEvent, { kind: "answer" }>, outcome: "correct" | "miss" | "dontknow", at: string, eventId: string) => {
 		const r = answerRating(e, outcome);
@@ -232,10 +307,7 @@ export function deriveLearner(rawEvents: readonly LearnerEvent[], graph: GraphCo
 				(answersByChat.get(e.chatId) ?? answersByChat.set(e.chatId, []).get(e.chatId)!).push(e);
 				if (e.outcome !== "unknown") rateAnswer(e, e.outcome, e.at, e.id);
 				else for (const id of answerItems(e)) { const it = item(id, e.at); it.reviewable = true; lesson(it, e.chatId); }
-				if (e.confidence != null && e.outcome !== "unknown") {
-					cal.n++; cal.conf += e.confidence; if (e.outcome === "correct") cal.right++;
-					if (e.confidence >= 75) { cal.sure++; if (e.outcome !== "correct") cal.sureWrong++; }
-				}
+				if (e.confidence != null && e.outcome !== "unknown") confidence.push({ at: e.at, confidence: e.confidence, correct: e.outcome === "correct", chatId: e.chatId });
 				break;
 			}
 			case "verdict": {
@@ -252,13 +324,16 @@ export function deriveLearner(rawEvents: readonly LearnerEvent[], graph: GraphCo
 				if (overruled.has(e.id)) break;
 				const it = item(e.itemId, e.at);
 				apply(it, e.rating, e.at, "review", e.id, e.mode === "produce" ? "produce" : "schedule");
+				if (e.confidence != null) confidence.push({ at: e.at, confidence: e.confidence, correct: e.rating >= 3, itemId: e.itemId });
 				break;
 			}
 			case "taught": {
 				const it = item(e.itemId, e.at);
 				it.reviewable = true; it.priority = Math.max(it.priority, 1); lesson(it, e.chatId);
 				if (e.term) it.label = e.term;
-				if (e.gloss) it.meaning = e.gloss;
+				if (e.gloss && it.meaningSource !== "learner") { it.meaning = e.gloss; delete it.meaningSource; }
+				if (e.lang) it.lang = e.lang;
+				if (e.example) { it.example = e.example; if (e.exampleEn) it.exampleEn = e.exampleEn; }
 				break;
 			}
 			case "used-early": {
@@ -297,14 +372,73 @@ export function deriveLearner(rawEvents: readonly LearnerEvent[], graph: GraphCo
 				if (e.on) suspended.add(e.itemId); else suspended.delete(e.itemId);
 				break;
 			}
+			case "merge": {
+				// the merged-away item's evidence already counts for `into` (canon); keep its name
+				const into = canon(e.into);
+				const it = item(into, e.at);
+				const name = e.from.slice(5);
+				if (name && name !== it.label && !it.aliases.includes(name)) it.aliases.push(name);
+				break;
+			}
+			case "retire": {
+				const it = item(e.itemId, e.at);
+				if (e.on) it.retired = true; else delete it.retired;
+				break;
+			}
+			case "meaning": {
+				const it = item(e.itemId, e.at);
+				// a model's meaning only fills a gap; the learner's own wording always stands
+				if (e.source === "learner" || !it.meaning) { it.meaning = e.meaning; it.meaningSource = e.source; }
+				break;
+			}
+			case "known": {
+				const it = item(e.itemId, e.at);
+				if (e.on) {
+					const t = Date.parse(e.at) || now;
+					const before = it.schedule;
+					const next: Schedule = { ...before, state: 2, stability: Math.max(before.stability, 90), difficulty: Math.min(before.difficulty || 3, 3), due: t + 90 * 86400000, scheduled_days: 90, elapsed_days: 0, learning_steps: 0, reps: before.reps + 1, last_review: t };
+					markSolid(it, before, next, e.at);
+					it.schedule = next; it.known = true; it.reviewable = true;
+					it.ratings.push({ at: e.at, rating: 4, source: "known", eventId: e.id });
+				} else delete it.known;
+				break;
+			}
 		}
 	}
 
 	// every graph proposition is an item (new until retrieved)
 	for (const n of graph.nodes) item(nodeItem(n.id), n.createdAt ?? new Date(now).toISOString());
 
+	// items from other apps' decks: their schedule is the baseline, this app's later reviews go on top
+	for (const x of graph.external ?? []) {
+		if (!x.term) continue;
+		const s = x.schedule && x.schedule.lastReview > 0 ? x.schedule : null;
+		const seenAt = new Date(s ? s.lastReview : now).toISOString();
+		const it = item(canon(termItem(x.term)), seenAt);
+		if (it.label === it.id.slice(5)) it.label = x.term;
+		if (!it.meaning && x.gloss) { it.meaning = x.gloss; it.meaningSource = "deck"; }
+		it.deck = x.deck; it.reviewable = true;
+		if (x.lang) it.lang = x.lang;
+		if (x.tags?.length) it.tags = x.tags;
+		if (x.example && !it.example) { it.example = x.example; if (x.exampleEn) it.exampleEn = x.exampleEn; }
+		if (x.audio) it.audio = x.audio;
+		if (!s) continue;
+		const base = externalSchedule(s);
+		const mine = it.ratings.filter((r) => !r.produce);
+		const later = mine.filter((r) => (Date.parse(r.at) || 0) > s.lastReview);
+		let sched = base;
+		for (const r of later) { const next = rate(sched, r.rating, Date.parse(r.at) || now); sched = next; }
+		if (later.length || !mine.length || Date.parse(mine[mine.length - 1]!.at) <= s.lastReview) {
+			it.schedule = sched; it.lapses = sched.lapses;
+			if (sched.state === 2 && sched.stability >= SOLID_STABILITY) it.solidSince ??= new Date(s.lastReview).toISOString(); else delete it.solidSince;
+		}
+		it.ratings.push({ at: seenAt, rating: 3, source: "deck", eventId: "deck:" + x.deck });
+		it.ratings.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+	}
+
 	for (const it of items.values()) {
 		it.retrievability = retrievability(it.schedule, now);
+		if (it.retired) it.reviewable = false;
 		const last3 = it.ratings.slice(-3);
 		const openMisc = it.misconceptions.some((m) => !m.resolvedAt);
 		it.status = suspended.has(it.id) ? "suspended"
@@ -326,15 +460,34 @@ export function deriveLearner(rawEvents: readonly LearnerEvent[], graph: GraphCo
 	}
 	return {
 		now, items, events, lessonTitles: graph.lessonTitles ?? new Map(),
-		answersByChat,
-		calibration: {
-			answers: cal.n,
-			meanConfidence: cal.n ? Math.round(cal.conf / cal.n) : null,
-			accuracy: cal.n ? Math.round((100 * cal.right) / cal.n) : null,
-			sureAndWrong: cal.sure ? Math.round((100 * cal.sureWrong) / cal.sure) : null,
-			sureCount: cal.sure,
-		},
+		answersByChat, confidence, aliases,
+		calibration: calibrationOf(confidence),
 	};
+}
+
+/** Calibration over a set of confidence judgments. */
+export function calibrationOf(points: readonly ConfidencePoint[]): Calibration {
+	const n = points.length, sure = points.filter((p) => p.confidence >= 75);
+	return {
+		answers: n,
+		meanConfidence: n ? Math.round(points.reduce((s, p) => s + p.confidence, 0) / n) : null,
+		accuracy: n ? Math.round((100 * points.filter((p) => p.correct).length) / n) : null,
+		sureAndWrong: sure.length ? Math.round((100 * sure.filter((p) => !p.correct).length) / sure.length) : null,
+		sureCount: sure.length,
+	};
+}
+
+/** Calibration per topic — a lesson (by its title) or a deck — weakest (most often sure and wrong) first. */
+export function calibrationByTopic(state: LearnerState): ({ topic: string } & Calibration)[] {
+	const groups = new Map<string, ConfidencePoint[]>();
+	for (const p of state.confidence) {
+		const it = p.itemId ? state.items.get(p.itemId) : undefined;
+		const chat = p.chatId ?? it?.lessons[0];
+		const topic = chat ? state.lessonTitles.get(chat) || "A lesson" : it?.deck ? `${it.deck[0]!.toUpperCase()}${it.deck.slice(1)} flashcards` : "Other";
+		(groups.get(topic) ?? groups.set(topic, []).get(topic)!).push(p);
+	}
+	return [...groups].map(([topic, ps]) => ({ topic, ...calibrationOf(ps) }))
+		.sort((a, b) => (b.sureAndWrong ?? -1) - (a.sureAndWrong ?? -1) || b.answers - a.answers);
 }
 
 /** Retrievability with the dependency rule: a proposition is only as available as its weakest premise. */
@@ -356,12 +509,26 @@ export interface QueueOptions {
 	only?: ReadonlySet<ItemId>;
 	/** Whether a "why" / "cloze" / "discriminate" card exists for an item. */
 	hasMode?: (id: ItemId, mode: ReviewMode) => boolean;
+	/** Only this deck's items (e.g. "bahasa"). Without it, items that live only in a deck stay out —
+	 *  a deck's backlog never floods the lesson queue; a deck word a lesson taught is in both. */
+	deck?: string;
+}
+
+/** Whether an item belongs in a queue for `deck` (undefined = the lessons' queue). */
+export function inDeck(it: ItemState, deck?: string): boolean {
+	return deck ? it.deck === deck : !it.deck || it.lessons.length > 0;
 }
 
 /** Which way to ask an item next. */
 export function modeFor(it: ItemState, now: number, hasMode: (id: ItemId, mode: ReviewMode) => boolean = () => false): ReviewMode {
 	const n = it.ratings.filter((r) => r.source === "review").length;
 	if (it.produce && isDue(it.produce, now)) return "produce";
+	if (it.lang) {
+		// a word of a language: both directions from the first stable state, and by ear
+		if (!it.produce && it.schedule.state === 2) return "produce";
+		const turn = (["recall", "listen", "cloze"] as const)[n % 3]!;
+		return turn === "cloze" && !hasMode(it.id, "cloze") ? "recall" : turn;
+	}
 	if (it.kind === "term" && !it.produce && it.schedule.state === 2 && it.schedule.stability >= 7) return "produce";
 	if (it.misconceptions.length && hasMode(it.id, "discriminate") && n % 2 === 1) return "discriminate";
 	if (it.kind === "node" && it.premises.length && hasMode(it.id, "why") && n % 3 === 2) return "why";
@@ -373,7 +540,7 @@ export function reviewQueue(state: LearnerState, opts: QueueOptions = {}): Queue
 	const now = state.now, limit = opts.limit ?? 50, newPerDay = opts.newPerDay ?? 20, has = opts.hasMode ?? (() => false);
 	const today = studyDay(now);
 	const out: QueueEntry[] = [];
-	const pool = [...state.items.values()].filter((it) => it.reviewable && it.status !== "leech" && it.status !== "suspended" && (!opts.only || opts.only.has(it.id)));
+	const pool = [...state.items.values()].filter((it) => it.reviewable && it.status !== "leech" && it.status !== "suspended" && (opts.only ? opts.only.has(it.id) : inDeck(it, opts.deck)));
 	const learning = pool.filter((it) => (it.schedule.state === 1 || it.schedule.state === 3) && it.schedule.due <= now).sort((a, b) => a.schedule.due - b.schedule.due);
 	const due = pool.filter((it) => it.schedule.state === 2 && (isDue(it.schedule, now) || (it.produce && isDue(it.produce, now))))
 		.sort((a, b) => (effectiveRetrievability(a) ?? 1) - (effectiveRetrievability(b) ?? 1));
@@ -389,8 +556,8 @@ export function reviewQueue(state: LearnerState, opts: QueueOptions = {}): Queue
 }
 
 /** How many are due now (the shelf's count). */
-export function dueCount(state: LearnerState, newPerDay = 20): { due: number; learning: number; fresh: number } {
-	const q = reviewQueue(state, { newPerDay, limit: 10000 });
+export function dueCount(state: LearnerState, newPerDay = 20, deck?: string): { due: number; learning: number; fresh: number } {
+	const q = reviewQueue(state, { newPerDay, limit: 10000, deck });
 	return { due: q.filter((e) => e.reason === "due").length, learning: q.filter((e) => e.reason === "learning").length, fresh: q.filter((e) => e.reason === "new").length };
 }
 
@@ -492,12 +659,15 @@ export function digest(state: LearnerState, days = 7): Digest {
 export interface GlossaryEntry {
 	itemId: ItemId; term: string; meaning: string; status: ItemStatus; retrievability: number | null;
 	lessons: string[]; asked: number; drift: ItemState["drift"]; misconceptions: Misconception[];
+	aliases: string[]; usedEarly: number; meaningSource?: ItemState["meaningSource"]; lang?: string; deck?: string; known?: boolean;
 }
 
-export function glossary(state: LearnerState, chatId?: string): GlossaryEntry[] {
+/** Terms taught or asked about (or one lesson's, or one deck's). Retired terms are not in it. */
+export function glossary(state: LearnerState, chatId?: string, deck?: string): GlossaryEntry[] {
 	return [...state.items.values()]
-		.filter((it) => it.kind === "term" && it.reviewable && (!chatId || it.lessons.includes(chatId)))
-		.map((it) => ({ itemId: it.id, term: it.label, meaning: it.meaning, status: it.status, retrievability: it.retrievability, lessons: it.lessons, asked: it.asked, drift: it.drift, misconceptions: it.misconceptions }))
+		.filter((it) => it.kind === "term" && it.reviewable && !it.retired && (chatId ? it.lessons.includes(chatId) : inDeck(it, deck)))
+		.map((it) => ({ itemId: it.id, term: it.label, meaning: it.meaning, status: it.status, retrievability: it.retrievability, lessons: it.lessons, asked: it.asked, drift: it.drift, misconceptions: it.misconceptions,
+			aliases: it.aliases, usedEarly: it.usedEarly, ...(it.meaningSource ? { meaningSource: it.meaningSource } : {}), ...(it.lang ? { lang: it.lang } : {}), ...(it.deck ? { deck: it.deck } : {}), ...(it.known ? { known: true } : {}) }))
 		.sort((a, b) => a.term.localeCompare(b.term));
 }
 
@@ -517,7 +687,7 @@ export function relatedItems(state: LearnerState, topic: string, chatId?: string
 		const viaLesson = Math.max(0, ...it.lessons.map((l) => lessonScore.get(l) ?? 0)) * 2;
 		return own + viaLesson;
 	};
-	return [...state.items.values()].filter((it) => it.ratings.length || it.misconceptions.length || it.asked || it.usedEarly || (it.reviewable && it.lessons.length))
+	return [...state.items.values()].filter((it) => !it.retired && (it.ratings.length || it.misconceptions.length || it.asked || it.usedEarly || (it.reviewable && it.lessons.length)))
 		.map((it) => [it, score(it)] as const).filter(([, s]) => s >= 2).sort((a, b) => b[1] - a[1]).slice(0, max).map(([it]) => it);
 }
 
@@ -530,7 +700,8 @@ export function profileText(state: LearnerState, topic: string, chatId?: string)
 	const solid = group(["solid"]), learning = group(["learning"]), weak = group(["fragile", "leech"]);
 	const met = rel.filter((it) => it.status === "new" && it.reviewable).slice(0, 15);
 	const c = state.calibration;
-	if (!rel.length && !(c.sureCount >= 5)) return null;
+	const deckPart = deckProfile(state, topic);
+	if (!rel.length && !(c.sureCount >= 5) && !deckPart) return null;
 	const lines = ["[Learner profile] — from the app's record of this learner's past answers and reviews, not from the learner:"];
 	if (solid.length) lines.push("", "Solid (held reliably — do not re-teach or re-probe; build on it):", ...solid.map((it) => `- ${it.label}`));
 	if (learning.length) lines.push("", "Learning (seen and partly held):", ...learning.map((it) => `- ${it.label}${pct(effectiveRetrievability(it))}`));
@@ -541,5 +712,62 @@ export function profileText(state: LearnerState, topic: string, chatId?: string)
 		lines.push("", `Calibration: ${c.sureAndWrong}% of answers given at ≥75% confidence were wrong (${c.sureCount} such answers; overall ${c.accuracy}% right at a mean ${c.meanConfidence}% confidence).` +
 			(c.sureAndWrong >= 25 ? " The learner is often sure and wrong — ask for the reason behind an answer, not only the answer." : ""));
 	}
+	if (deckPart) lines.push("", deckPart);
 	return lines.join("\n");
+}
+
+/** Words that name a language in a lesson's topic, by BCP-47 code. */
+const LANGUAGE_WORDS: Record<string, string[]> = { id: ["indonesia", "indonesian", "bahasa"] };
+
+/** What the learner holds from another app's deck in the topic's language — for a language lesson's profile. */
+export function deckProfile(state: LearnerState, topic: string): string | null {
+	const t = normTerm(topic);
+	const langs = Object.entries(LANGUAGE_WORDS).filter(([, ws]) => ws.some((w) => t.includes(w))).map(([l]) => l);
+	if (!langs.length) return null;
+	const deck = [...state.items.values()].filter((it) => it.deck && it.lang && langs.includes(it.lang) && !it.retired);
+	if (!deck.length) return null;
+	const seen = deck.filter((it) => it.schedule.state !== 0);
+	const solid = seen.filter((it) => it.status === "solid" || (effectiveRetrievability(it) ?? 0) >= 0.9);
+	const fading = seen.filter((it) => !solid.includes(it)).sort((a, b) => (effectiveRetrievability(a) ?? 0) - (effectiveRetrievability(b) ?? 0));
+	const names = [...new Set(deck.map((it) => it.deck!))].join(", ");
+	return [
+		`From the learner's ${names} flashcards (${deck.length} words, ${seen.length} studied):`,
+		solid.length ? `- Held well (use freely, no need to gloss): ${solid.slice(0, 60).map((it) => it.label).join(", ")}` : "",
+		fading.length ? `- Studied but fading (gloss on first use, or check recall): ${fading.slice(0, 30).map((it) => it.label).join(", ")}` : "",
+		`- ${deck.length - seen.length} deck words never studied — treat as unknown.`,
+	].filter(Boolean).join("\n");
+}
+
+// ─── vocabulary health: terms used before they were taught ──────────────────
+
+export interface VocabularyHealth {
+	taught: number;
+	usedEarly: number;
+	/** Share of new terms that were used before they were taught (0–100), null with none. */
+	rate: number | null;
+	/** Week by week (Monday starts), oldest first — is the gate working. */
+	weeks: { week: string; taught: number; usedEarly: number; rate: number | null }[];
+}
+
+export function vocabularyHealth(state: LearnerState, chatId?: string, weeks = 6): VocabularyHealth {
+	const evs = state.events.filter((e): e is Extract<LearnerEvent, { kind: "taught" | "used-early" }> => (e.kind === "taught" || e.kind === "used-early") && (!chatId || e.chatId === chatId));
+	const rateOf = (t: number, u: number) => (t + u ? Math.round((100 * u) / (t + u)) : null);
+	const monday = (ms: number) => { const d = new Date(ms); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+	const out: VocabularyHealth["weeks"] = [];
+	for (let i = weeks - 1; i >= 0; i--) {
+		const w = monday(state.now - i * 7 * 86400000);
+		const inWeek = evs.filter((e) => monday(Date.parse(e.at)) === w);
+		const t = inWeek.filter((e) => e.kind === "taught").length, u = inWeek.length - t;
+		out.push({ week: w, taught: t, usedEarly: u, rate: rateOf(t, u) });
+	}
+	const taught = evs.filter((e) => e.kind === "taught").length, usedEarly = evs.length - taught;
+	return { taught, usedEarly, rate: rateOf(taught, usedEarly), weeks: out };
+}
+
+/** A term the check should never have kept: a lone letter or symbol, a number. */
+export function isJunkTerm(term: string): boolean {
+	const t = normTerm(term).replace(/[()]/g, "").trim();
+	if (!t) return true;
+	if (/^[\p{N}\s.,]+$/u.test(t)) return true;
+	return [...t.replace(/[^\p{L}]/gu, "")].length <= 1 && !/[\^_=+*\/×·√∑∫-]/.test(t);
 }
