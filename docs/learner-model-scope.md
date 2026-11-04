@@ -172,3 +172,14 @@ Measured on a copy of the live data (24 sessions), real cheap model (claude-code
 - **Decks** (data/learner/external/*.json; scripts/sync-bahasa.mts every 30 min on madison, LaunchAgent com.devinthomas.learnharness-bahasa-sync): the Bahasa app's 1,043 cards (202 studied there, 618 with a Lingua Libre recording) with its FSRS schedule as the baseline; reviews here go on top and are written back to its progress gist (backup first, ~/backups/bahasa-gist/). Deck-only words have their own queue (?deck=bahasa) and stay out of the lessons' queue, glossary and weekly digest; a language lesson's profile names what the deck holds.
 - **Opening a lesson** (GET /api/learner/lesson/[id]): warm-up items; after three hours or more, the recap (cheap model, kept until the lesson moves on); the tutor gets [Returning after …] once.
 - **Map** (GET /api/learner/map) and **vocabulary health** (terms used before they were taught, by week; 27% on real data so far).
+
+## Round three: what the memory research asks for (2026-11-04, 8ac5abc, 69eae0b)
+
+Researched (Perplexity) against Dunlosky 2013, Rawson & Dunlosky (successive relearning), Bjork (performance vs learning), Butterfield & Metcalfe (hypercorrection), pretesting and generation meta-analyses, Smith & Karpicke 2014 (MC vs short answer: d ≈ 0.07 — format matters little; production matters for language), Nakata (receptive vs productive).
+
+- **Relearning to criterion** (Paper's Learn, `rvNext`): a card rated Again comes back later in the same session until recalled once — four cards on, two when the answer was given sure — at most three times. The session list was fixed when it opened, so FSRS's 10-minute retry never showed.
+- **Held a day later**: `lessonProgress` nodes carry `held` — recalled again ≥ 20 h after first confirmed (a later check, or a review of its terms). On real data 14 of 20 LLM steps are confirmed, 1 is held.
+- **Re-check note** (`recheckNote`): every third teaching turn at most, one step confirmed ≥ 20 min ago and not since, once a day per step.
+- **Confident misses** (`confidentMissNote`): answers ≥ 75% sure and wrong are named to the tutor once, with his reasoning. The review card says so and the card comes back sooner.
+- **Use-it cards** (`apply`): 2–3 fresh small problems per applicable item, asked every third review in turn; cards written before are rewritten as they come up.
+- **Deck pacing** (`DECK_LIMITS`): at most 40 overdue (half-learned included) and 10 new a day; the summary carries the backlog (198 on real data).
