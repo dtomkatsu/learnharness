@@ -39,7 +39,7 @@ describe("LH_DATA_DIR seam", () => {
 
 	it("unset = the repo data/ exactly as before (fresh child process, no env)", () => {
 		// outside tests: a child that is not NODE_ENV=test (under tests, unset is a scratch folder — tests/learner-model-2)
-		const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "NODE_ENV" && k !== "LH_DATA_DIR" && k !== "NODE_TEST_CONTEXT"));
+		const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "NODE_ENV" && k !== "LH_DATA_DIR" && k !== "NODE_TEST_CONTEXT")) as NodeJS.ProcessEnv;
 		const out = execFileSync(
 			process.execPath,
 			["--import", TSX_LOADER, "--eval", `const m = await import(${JSON.stringify(path.join(REPO_ROOT, "config.ts"))}); console.log(JSON.stringify({ data: m.PATHS.data, chats: m.PATHS.chats }));`],
