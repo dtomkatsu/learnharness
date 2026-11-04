@@ -1,4 +1,4 @@
-import { type ReviewMode, retrievability } from "@/src/core";
+import { DECK_LIMITS, type ReviewMode, retrievability } from "@/src/core";
 import { cardContext, cardFace, cardsNeeded, fallbackCard, generateCards, gradeAnswer, learnerEngine, learnerState, prefetchCards, queueView, readCards, recordReview, stores } from "@/src/server";
 
 /**
@@ -12,17 +12,18 @@ export async function GET(req: Request) {
 	const limit = Math.max(1, Math.min(100, Number(q.get("limit")) || 20));
 	const only = q.get("only") ? new Set(q.get("only")!.split(",").filter(Boolean)) : undefined;
 	const deck = q.get("deck") || undefined;
+	const caps = deck ? DECK_LIMITS : {};
 	let state = learnerState(stores);
-	let queue = queueView(state, { limit, only, deck });
+	let queue = queueView(state, { limit, only, deck, ...caps });
 	const need = cardsNeeded(state, queue.slice(0, 5).map((e) => e.itemId));
 	const engine = learnerEngine(false);
 	if (need.length && engine) {
 		try { await generateCards(stores, state, need, engine, cardContext(stores, state)); }
 		catch (err) { console.error("[learner] card writing failed:", err); }
 		state = learnerState(stores);
-		queue = queueView(state, { limit, only, deck });
+		queue = queueView(state, { limit, only, deck, ...caps });
 	}
-	prefetchCards(stores, learnerEngine(true), queueView(state, { limit: 40, only, deck }).map((e) => e.itemId));
+	prefetchCards(stores, learnerEngine(true), queueView(state, { limit: 40, only, deck, ...caps }).map((e) => e.itemId));
 	return Response.json({ queue });
 }
 
@@ -35,7 +36,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
 	const body = (await req.json().catch(() => ({}))) as { itemId?: unknown; mode?: unknown; response?: unknown; rating?: unknown; chatId?: unknown; confidence?: unknown };
 	const itemId = typeof body.itemId === "string" ? body.itemId : "";
-	const mode = (["recall", "produce", "why", "cloze", "discriminate", "listen"].includes(String(body.mode)) ? body.mode : "recall") as ReviewMode;
+	const mode = (["recall", "produce", "why", "cloze", "discriminate", "listen", "apply"].includes(String(body.mode)) ? body.mode : "recall") as ReviewMode;
 	const state = learnerState(stores);
 	const it = state.items.get(itemId);
 	if (!it) return Response.json({ error: "No such item" }, { status: 404 });

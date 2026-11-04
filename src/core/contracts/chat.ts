@@ -89,6 +89,10 @@ export interface LessonVocabulary {
 	notedReturn?: string;
 	/** The learner-facing recap of where the lesson left off, and the message it was written through. */
 	recap?: { through: string; text: string };
+	/** Plan nodes the tutor was asked to re-check, with when (once a day each). */
+	notedRecheck?: Record<string, string>;
+	/** Confident misses already named to the tutor (answer tool-call ids). */
+	notedConfident?: string[];
 }
 
 export interface ChatParent {

@@ -424,6 +424,8 @@ export async function handleChatInput(
 				if (mark.unchecked) v.notedUnchecked = mark.unchecked;
 				if (mark.drift) v.notedDrift = mark.drift;
 				if (mark.returned) v.notedReturn = mark.returned;
+				if (mark.recheck) v.notedRecheck = mark.recheck;
+				if (mark.confident) v.notedConfident = mark.confident;
 			});
 		} catch (err) {
 			console.error(`[chat ${chatId}] learner-notes bookkeeping failed:`, err);

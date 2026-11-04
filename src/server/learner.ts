@@ -127,6 +127,7 @@ Write, per item:
 - "why": propositions with premises only — prompt = "Why is it true that …?"; answer = how it follows from the premises, in two or three sentences.
 - "cloze": only when there is a formula, definition or exact phrase worth memorizing verbatim — prompt = the statement with the key part replaced by "____"; answer = the missing part.
 - "discriminate": only when a wrong belief is listed — prompt = sets the item beside the thing it was confused with and asks what separates them; answer = the distinction; with = the confused-with thing in a few words.
+- "apply": when the idea can be USED — 2 or 3 small fresh problems that need it (compute something, predict an outcome, decide which case applies), each answerable in a line or two, with different numbers or cases than the lesson's, and the worked answer. Not a definition or recall question. [] when it is a pure term or fact with nothing to apply.
 - "elaboration": only when lapses ≥ 2 — re-derive it from something more basic the learner would accept, in the spirit of "how could I have discovered this?" (3–5 sentences).
 - "hook": only when lapses ≥ 3 — one memory hook: a vivid image, a contrast pair, or an etymology that is TRUE. Never invent etymology.
 
@@ -137,7 +138,7 @@ An item with "lang" is a WORD OF A LANGUAGE the learner is learning (lang is its
 - "cloze": the example sentence with the word replaced by "____" (prompt, followed by the English translation in brackets); answer = the word.
 
 Plain words; one idea per card; no answer may be guessable from its prompt. Reply with JSON only:
-{"cards":[{"id":"…","meaning":"…","recall":{"prompt":"…","answer":"…"},"produce":{…}?,"why":{…}?,"cloze":{…}?,"discriminate":{"prompt":"…","answer":"…","with":"…"}?,"elaboration":"…"?,"hook":"…"?,"example":{"sentence":"…","translation":"…"}?}]}`;
+{"cards":[{"id":"…","meaning":"…","recall":{"prompt":"…","answer":"…"},"produce":{…}?,"why":{…}?,"cloze":{…}?,"discriminate":{"prompt":"…","answer":"…","with":"…"}?,"elaboration":"…"?,"hook":"…"?,"example":{"sentence":"…","translation":"…"}?,"apply":[{"prompt":"…","answer":"…"}]}]}`;
 
 function jsonOf(text: string): any {
 	const m = /\{[\s\S]*\}/.exec(text); if (!m) return null;
@@ -173,6 +174,7 @@ export function cardsNeeded(state: LearnerState, ids: readonly ItemId[], cards =
 		const c = cards[id];
 		if (!c || c.generatedAt === new Date(0).toISOString()) return true;
 		if (it.lang && (!c.produce || !c.example)) return true;
+		if (!it.lang && c.apply === undefined) return true;   // written before use-it problems existed
 		return (it.lapses >= 2 && !c.elaboration) || (it.lapses >= 3 && !c.hook) || (it.misconceptions.length > 0 && !c.discriminate);
 	});
 }
@@ -202,6 +204,7 @@ export async function generateCards(deps: LearnerDeps, state: LearnerState, ids:
 			...(disc && typeof c.discriminate.with === "string" ? { discriminate: { ...disc, with: c.discriminate.with } } : {}),
 			...(typeof c.elaboration === "string" && c.elaboration.trim() ? { elaboration: c.elaboration.trim() } : cards[it.id]?.elaboration ? { elaboration: cards[it.id]!.elaboration } : {}),
 			...(typeof c.hook === "string" && c.hook.trim() ? { hook: c.hook.trim() } : cards[it.id]?.hook ? { hook: cards[it.id]!.hook } : {}),
+			apply: (Array.isArray(c.apply) ? c.apply : []).map(face).filter((f: CardFace | undefined): f is CardFace => !!f).slice(0, 3),
 			...(c.example && typeof c.example.sentence === "string" && c.example.sentence.trim() ? { example: { sentence: c.example.sentence.trim(), translation: String(c.example.translation ?? "").trim() } } : it.example ? { example: { sentence: it.example, translation: it.exampleEn ?? "" } } : {}),
 			lapsesAt: it.lapses, generatedAt: new Date().toISOString(),
 		};
@@ -254,6 +257,10 @@ export function recordReview(itemId: ItemId, mode: ReviewMode, rating: Rating, g
 /** The face a card is asked with in a mode (listen: the word is spoken, its meaning is the answer). */
 export function cardFace(c: Card, mode: ReviewMode, it: ItemState): CardFace & { mode: ReviewMode; speak?: string } {
 	if (mode === "listen") return { mode, prompt: "Listen — what does it mean?", answer: `${it.label} — ${c.recall.answer}`, speak: it.label };
+	if (mode === "apply") {
+		const list = c.apply ?? [];
+		if (list.length) { const k = it.ratings.filter((r) => r.source === "review").length; return { mode, ...list[Math.floor(k / 3) % list.length]! }; }   // apply comes every third review: each time the next problem
+	}
 	const f = (c as unknown as Record<string, CardFace | undefined>)[mode];
 	return f && typeof f.prompt === "string" ? { mode, ...f } : { mode: "recall", ...c.recall };
 }
@@ -275,7 +282,7 @@ export function itemView(state: LearnerState, it: ItemState, cards: Record<ItemI
 	};
 }
 
-export function queueView(state: LearnerState, opts: { limit?: number; only?: Set<ItemId>; newPerDay?: number; deck?: string } = {}) {
+export function queueView(state: LearnerState, opts: { limit?: number; only?: Set<ItemId>; newPerDay?: number; deck?: string; dueCap?: number } = {}) {
 	const cards = readCards();
 	return reviewQueue(state, { ...opts, hasMode: hasCardMode(cards) }).map((q) => {
 		const it = state.items.get(q.itemId)!;
@@ -312,7 +319,7 @@ export function currentPlanNode(r: ChatRecord): string | null {
 	return null;
 }
 
-export interface LearnerNotes { sections: string[]; mark: { profiled?: boolean; leeches?: string[]; unchecked?: string[]; drift?: string[]; dueTurn?: number; returned?: string } }
+export interface LearnerNotes { sections: string[]; mark: { profiled?: boolean; leeches?: string[]; unchecked?: string[]; drift?: string[]; dueTurn?: number; returned?: string; recheck?: Record<string, string>; confident?: string[] } }
 
 /**
  * The learner-model sections of a turn's lesson notes: the profile (once per
@@ -354,6 +361,11 @@ export function learnerNotes(state: LearnerState, record: ChatRecord, teaching: 
 	if (!teaching) return { sections, mark };
 	const turn = (v?.noteTurns ?? 0) + 1; mark.dueTurn = turn;
 	if (opts.mixed) { const mix = questionMixNote(record); if (mix) sections.push(mix); }
+	// every third teaching turn at most: a returning lesson has many confirmed steps, and one re-check a turn would crowd out the teaching
+	const back = turn % 3 === 0 ? recheckNote(state, record) : null;
+	if (back) { sections.push(back.text); mark.recheck = { ...(v?.notedRecheck ?? {}), [back.node]: new Date(state.now).toISOString() }; }
+	const sure = confidentMissNote(state, record);
+	if (sure) { sections.push(sure.text); mark.confident = [...(v?.notedConfident ?? []), ...sure.ids]; }
 	if (turn % 4 === 0) {
 		const due = relatedItems(state, topic, record.id).filter((it) => it.schedule.state === 2 && isDue(it.schedule, state.now) && it.status !== "leech" && it.status !== "suspended").slice(0, 3);
 		if (due.length) sections.push(["[Due for review, and related to this lesson]", ...due.map((it) => `- ${it.label}`), "Where one fits naturally, use it as a quick retrieval check — ask before re-explaining. Never derail the lesson for it."].join("\n"));
@@ -629,7 +641,7 @@ export function knowledgeMap(deps: LearnerDeps, state: LearnerState) {
 			return {
 				id: r.id, title: r.title,
 				steps: prog.nodes.map((n) => ({
-					id: n.id, title: n.title, status: n.status, checks: n.checks, current: n.id === cur,
+					id: n.id, title: n.title, status: n.status, checks: n.checks, held: n.held, current: n.id === cur,
 					terms: (planned[n.id]?.introduces ?? []).map((t) => brief(termItem(t))).filter(Boolean),
 					needs: (planned[n.id]?.needs ?? []).map((t) => brief(termItem(t))).filter(Boolean),
 				})),
@@ -687,4 +699,42 @@ export function sideQuestionContext(parent: ChatRecord, term?: string, budget = 
 	}
 	if (recent.length) lines.push("", "The lesson's newest teaching, oldest first:", recent.join("\n\n---\n\n"));
 	return lines.join("\n");
+}
+
+// ─── checks that what was confirmed has stuck, and confident mistakes ───────
+
+/** A step confirmed this long ago and not checked since is worth one quick retrieval before building further. */
+export const RECHECK_AFTER_MS = 20 * 60000;
+
+/**
+ * The tutor's re-check note: an earlier step of this lesson that was confirmed at least 20 minutes ago, not checked
+ * since and not yet held a day later — one quick retrieval of it, since a check right after the teaching says little
+ * about next week. At most one a turn, the oldest first, each step at most once a day.
+ */
+export function recheckNote(state: LearnerState, record: ChatRecord): { text: string; node: string } | null {
+	if (!record.tree?.nodes.length) return null;
+	const prog = lessonProgress(state, record.id, record.tree);
+	const noted = record.vocabulary?.notedRecheck ?? {};
+	const cur = currentPlanNode(record);
+	const day = 86400000;
+	const cand = prog.nodes.filter((n) => (n.status === "checked" || n.status === "repaired") && !n.held && n.id !== cur && n.lastCheckedAt
+		&& state.now - Date.parse(n.lastCheckedAt) >= RECHECK_AFTER_MS && !(noted[n.id] && state.now - Date.parse(noted[n.id]!) < day))
+		.sort((a, b) => Date.parse(a.lastCheckedAt!) - Date.parse(b.lastCheckedAt!));
+	const n = cand[0];
+	if (!n) return null;
+	const mins = Math.round((state.now - Date.parse(n.lastCheckedAt!)) / 60000);
+	const ago = mins >= 2880 ? `${Math.round(mins / 1440)} days` : mins >= 120 ? `${Math.round(mins / 60)} hours` : `${mins} minutes`;
+	return { node: n.id, text: `[Re-check an earlier step] "${n.title}" was confirmed ${ago} ago and has not been checked since. In this turn or the next, ask one quick retrieval question on it — before building further on it, without re-teaching it first (his own words if it fits). A right answer now is the evidence it stuck; a miss means repair it before going on.` };
+}
+
+/** The tutor's note on answers given with high confidence and wrong (≥ 75%): the moment a mistake is most often fixed for good. */
+export function confidentMissNote(state: LearnerState, record: ChatRecord): { text: string; ids: string[] } | null {
+	const seen = new Set(record.vocabulary?.notedConfident ?? []);
+	const misses = (state.answersByChat.get(record.id) ?? []).filter((a) => a.outcome === "miss" && (a.confidence ?? 0) >= 75 && a.questionType !== "predict" && !seen.has(a.toolCallId)).slice(-2);
+	if (!misses.length) return null;
+	return {
+		ids: misses.map((a) => a.toolCallId),
+		text: "[Confident miss] " + misses.map((a) => `He answered "${a.question.slice(0, 160)}" ${a.confidence}% sure, and wrong${a.thinking ? ` (his reasoning: "${a.thinking.slice(0, 200)}")` : ""}.`).join(" ") +
+			" A mistake made with confidence is the one most often corrected for good once it is named: say exactly which distinction he missed, ask what made his answer seem right, and come back to it with a fresh question a few turns from now.",
+	};
 }

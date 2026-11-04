@@ -29,7 +29,7 @@ export const termItem = (term: string): ItemId => "term:" + normTerm(term);
 export const nodeItem = (id: string): ItemId => "node:" + id;
 
 /** listen: the prompt is the word spoken (language words). */
-export type ReviewMode = "recall" | "produce" | "why" | "cloze" | "discriminate" | "listen";
+export type ReviewMode = "recall" | "produce" | "why" | "cloze" | "discriminate" | "listen" | "apply";
 
 interface EventBase { id: string; at: string }
 
@@ -509,6 +509,9 @@ export interface QueueOptions {
 	only?: ReadonlySet<ItemId>;
 	/** Whether a "why" / "cloze" / "discriminate" card exists for an item. */
 	hasMode?: (id: ItemId, mode: ReviewMode) => boolean;
+	/** At most this many due reviews a study day (reviews already done today count against it) — a deck's months-old
+	 *  backlog spread over days instead of 200 at once, the most forgotten first. */
+	dueCap?: number;
 	/** Only this deck's items (e.g. "bahasa"). Without it, items that live only in a deck stay out —
 	 *  a deck's backlog never floods the lesson queue; a deck word a lesson taught is in both. */
 	deck?: string;
@@ -531,6 +534,9 @@ export function modeFor(it: ItemState, now: number, hasMode: (id: ItemId, mode: 
 	}
 	if (it.kind === "term" && !it.produce && it.schedule.state === 2 && it.schedule.stability >= 7) return "produce";
 	if (it.misconceptions.length && hasMode(it.id, "discriminate") && n % 2 === 1) return "discriminate";
+	// every third review asks for the idea USED on a fresh small problem when the card has some (recall alone is not
+	// the skill: computing a softmax is not saying what one is); propositions with premises alternate it with "why"
+	if (n % 3 === 2 && hasMode(it.id, "apply")) return it.kind === "node" && it.premises.length && hasMode(it.id, "why") && Math.floor(n / 3) % 2 === 0 ? "why" : "apply";
 	if (it.kind === "node" && it.premises.length && hasMode(it.id, "why") && n % 3 === 2) return "why";
 	if (hasMode(it.id, "cloze") && n % 3 === 1) return "cloze";
 	return "recall";
@@ -542,9 +548,11 @@ export function reviewQueue(state: LearnerState, opts: QueueOptions = {}): Queue
 	const out: QueueEntry[] = [];
 	const pool = [...state.items.values()].filter((it) => it.reviewable && it.status !== "leech" && it.status !== "suspended" && (opts.only ? opts.only.has(it.id) : inDeck(it, opts.deck)));
 	const learning = pool.filter((it) => (it.schedule.state === 1 || it.schedule.state === 3) && it.schedule.due <= now).sort((a, b) => a.schedule.due - b.schedule.due);
-	const due = pool.filter((it) => it.schedule.state === 2 && (isDue(it.schedule, now) || (it.produce && isDue(it.produce, now))))
-		.sort((a, b) => (effectiveRetrievability(a) ?? 1) - (effectiveRetrievability(b) ?? 1));
 	const introducedToday = new Set(state.events.filter((e) => e.kind === "review" && studyDay(Date.parse(e.at)) === today).map((e) => (e as { itemId: string }).itemId));
+	const allDue = pool.filter((it) => it.schedule.state === 2 && (isDue(it.schedule, now) || (it.produce && isDue(it.produce, now))))
+		.sort((a, b) => (effectiveRetrievability(a) ?? 1) - (effectiveRetrievability(b) ?? 1));
+	const doneToday = opts.dueCap != null ? pool.filter((it) => introducedToday.has(it.id)).length : 0;
+	const due = opts.dueCap != null && !opts.only ? allDue.slice(0, Math.max(0, opts.dueCap - doneToday)) : allDue;
 	const freshToday = [...state.items.values()].filter((it) => it.ratings[0] && studyDay(Date.parse(it.ratings[0].at)) === today && introducedToday.has(it.id)).length;
 	const fresh = pool.filter((it) => it.schedule.state === 0)
 		.sort((a, b) => b.priority - a.priority || (b.misconceptions.length - a.misconceptions.length) || (a.firstSeen < b.firstSeen ? -1 : 1))
@@ -556,18 +564,27 @@ export function reviewQueue(state: LearnerState, opts: QueueOptions = {}): Queue
 }
 
 /** How many are due now (the shelf's count). */
-export function dueCount(state: LearnerState, newPerDay = 20, deck?: string): { due: number; learning: number; fresh: number } {
-	const q = reviewQueue(state, { newPerDay, limit: 10000, deck });
-	return { due: q.filter((e) => e.reason === "due").length, learning: q.filter((e) => e.reason === "learning").length, fresh: q.filter((e) => e.reason === "new").length };
+export function dueCount(state: LearnerState, newPerDay = 20, deck?: string, dueCap?: number): { due: number; learning: number; fresh: number; backlog?: number } {
+	const q = reviewQueue(state, { newPerDay, limit: 10000, deck, dueCap });
+	const out = { due: q.filter((e) => e.reason === "due").length, learning: q.filter((e) => e.reason === "learning").length, fresh: q.filter((e) => e.reason === "new").length };
+	if (dueCap == null) return out;
+	// the whole backlog, for "30 today (218 due)"
+	const all = reviewQueue(state, { newPerDay: 0, limit: 100000, deck });
+	return { ...out, backlog: all.filter((e) => e.reason === "due").length };
 }
+
+/** A deck's daily limits: its backlog spread over days, fewer new words while one is waiting. */
+export const DECK_LIMITS = { dueCap: 40, newPerDay: 10 };
 
 // ─── lesson progress ─────────────────────────────────────────────────────────
 
 export type NodeProgress = "checked" | "repaired" | "missed" | "open";
 
 export interface LessonProgress {
-	nodes: { id: string; title: string; status: NodeProgress; checks: number }[];
-	checked: number; repaired: number; missed: number; open: number;
+	/** held: confirmed, and recalled again a day or more later (a later check on the step, or a review or warm-up of its
+	 *  terms) — right just after the teaching says little about next week. confirmedAt: the first correct check. */
+	nodes: { id: string; title: string; status: NodeProgress; checks: number; held: boolean; confirmedAt: string | null; lastCheckedAt: string | null }[];
+	checked: number; repaired: number; missed: number; open: number; held: number;
 	/** Items this lesson moved: established (rated good+), still shaky, added to review. */
 	established: string[];
 	shaky: string[];
@@ -587,7 +604,23 @@ export function lessonProgress(state: LearnerState, chatId: string, tree: { node
 		if (last !== "correct") return "missed";
 		return known.some((x) => x !== "correct") ? "repaired" : "checked";
 	};
-	const nodes = (tree?.nodes ?? []).map((n) => ({ id: n.id, title: n.title, status: statusOf(byNode.get(n.id)), checks: (byNode.get(n.id) ?? []).length }));
+	const HELD_GAP = 20 * 3600000;
+	const answersOf = (id: string) => answers.filter((a) => a.planNode === id);
+	const heldOf = (id: string): { held: boolean; confirmedAt: string | null; lastCheckedAt: string | null } => {
+		const mine = answersOf(id), first = mine.find((a) => a.outcome === "correct");
+		const lastCheckedAt = mine.length ? mine[mine.length - 1]!.at : null;
+		if (!first) return { held: false, confirmedAt: null, lastCheckedAt };
+		const after = Date.parse(first.at) + HELD_GAP;
+		if (mine.some((a) => a.outcome === "correct" && Date.parse(a.at) >= after)) return { held: true, confirmedAt: first.at, lastCheckedAt };
+		const terms = new Set(mine.flatMap((a) => a.items));
+		const held = [...terms].some((t) => (state.items.get(t)?.ratings ?? []).some((r) => r.rating >= 3 && r.source !== "deck" && Date.parse(r.at) >= after));
+		return { held, confirmedAt: first.at, lastCheckedAt };
+	};
+	const nodes = (tree?.nodes ?? []).map((n) => {
+		const status = statusOf(byNode.get(n.id));
+		const h = status === "checked" || status === "repaired" ? heldOf(n.id) : { held: false, confirmedAt: null, lastCheckedAt: answersOf(n.id).slice(-1)[0]?.at ?? null };
+		return { id: n.id, title: n.title, status, checks: (byNode.get(n.id) ?? []).length, ...h };
+	});
 	const st = new Map(nodes.map((n) => [n.id, n.status]));
 	const parents = new Map<string, string[]>();
 	for (const e of tree?.edges ?? []) (parents.get(e.to) ?? parents.set(e.to, []).get(e.to)!).push(e.from);
@@ -600,6 +633,7 @@ export function lessonProgress(state: LearnerState, chatId: string, tree: { node
 		repaired: nodes.filter((n) => n.status === "repaired").length,
 		missed: nodes.filter((n) => n.status === "missed").length,
 		open: nodes.filter((n) => n.status === "open").length,
+		held: nodes.filter((n) => n.held).length,
 		established: mine.filter((it) => { const r = ratedHere(it); return r.length > 0 && r[r.length - 1]!.rating >= 3; }).map((it) => it.label),
 		shaky: mine.filter((it) => it.status === "fragile" || it.status === "misconceived" || (ratedHere(it).slice(-1)[0]?.rating ?? 3) < 3).map((it) => it.label),
 		added: mine.filter((it) => it.reviewable && it.kind === "term").map((it) => it.label),

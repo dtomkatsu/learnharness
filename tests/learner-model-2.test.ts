@@ -306,3 +306,55 @@ describe("the question-mix nudge", () => {
 	});
 });
 
+describe("memory: relearning, held later, use it, confident misses, a backlog", () => {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const ans = (node: string, outcome: string, t: number, extra: Record<string, unknown> = {}) => ev({ kind: "answer", chatId: "L", messageId: "m", toolCallId: "a" + n, tool: "quiz", questionType: "check", question: "q on " + node, outcome, planNode: node, items: ["term:" + node], ...extra }, t);
+	const tree = { nodes: [{ id: "a", title: "Step A" }, { id: "b", title: "Step B" }, { id: "c", title: "Step C" }], edges: [] };
+	it("a step right just after the teaching is confirmed; right again a day later it is held", () => {
+		const st = M.deriveLearner([ans("a", "correct", T0), ans("b", "correct", T0), ans("a", "correct", T0 + DAY), review("term:b", 3, T0 + 2 * HOUR)], G0, T0 + 2 * DAY);
+		const p = M.lessonProgress(st, "L", tree);
+		assert.deepEqual(p.nodes.map((x) => [x.id, x.status, x.held]), [["a", "checked", true], ["b", "checked", false], ["c", "open", false]]);
+		assert.equal(p.held, 1);
+		const st2 = M.deriveLearner([ans("b", "correct", T0), review("term:b", 3, T0 + DAY)], G0, T0 + 2 * DAY);
+		assert.equal(M.lessonProgress(st2, "L", tree).nodes[1]!.held, true, "a review of its term a day later counts");
+	});
+	it("the tutor is asked to re-check a step confirmed 20 minutes ago, once a day, not the current one", () => {
+		const st = M.deriveLearner([ans("a", "correct", T0), ans("b", "correct", T0 + 25 * 60000)], G0, T0 + 30 * 60000);
+		const rec = { id: "L", title: "t", tree, messages: [{ id: "m1", role: "assistant", content: [{ type: "toolCall", id: "x", name: "quiz", arguments: { nodeId: "b" } }], stopReason: "toolUse", api: "x", provider: "x", model: "x", usage, timestamp: 1 }] } as never;
+		const note = L.recheckNote(st, rec)!;
+		assert.equal(note.node, "a"); assert.match(note.text, /"Step A" was confirmed 30 minutes ago/);
+		assert.equal(L.recheckNote(st, { ...(rec as object), vocabulary: { terms: [], flagged: [], sideQuestions: [], notedRecheck: { a: new Date(T0 + 29 * 60000).toISOString() } } } as never), null);
+	});
+	it("a confident wrong answer is named to the tutor once", () => {
+		const st = M.deriveLearner([ans("a", "miss", T0, { confidence: 90, thinking: "bigger score means less weight" }), ans("b", "miss", T0, { confidence: 30 })], G0, T0 + 1);
+		const rec = { id: "L", title: "t", messages: [] } as never;
+		const n1 = L.confidentMissNote(st, rec)!;
+		assert.equal(n1.ids.length, 1); assert.match(n1.text, /90% sure, and wrong \(his reasoning: "bigger score means less weight"\)/);
+		assert.equal(L.confidentMissNote(st, { id: "L", title: "t", messages: [], vocabulary: { terms: [], flagged: [], sideQuestions: [], notedConfident: n1.ids } } as never), null);
+	});
+	it("every third review uses the idea on a fresh problem when the card has some, rotating through them", () => {
+		const evs: never[] = [taught("softmax", T0)];
+		for (let i = 0; i < 2; i++) evs.push(review("term:softmax", 3, T0 + (i + 1) * DAY));
+		const st = M.deriveLearner(evs, G0, T0 + 3 * DAY);
+		const it = st.items.get("term:softmax")!;
+		assert.equal(M.modeFor(it, T0 + 3 * DAY, (_id, m) => m === "apply"), "apply");
+		assert.equal(M.modeFor(it, T0 + 3 * DAY, () => false), "recall");
+		const card = { itemId: it.id, meaning: "m", recall: { prompt: "p", answer: "a" }, apply: [{ prompt: "softmax of (0, ln 3)?", answer: "(1/4, 3/4)" }, { prompt: "two", answer: "2" }], lapsesAt: 0, generatedAt: "x" };
+		assert.deepEqual(L.cardFace(card as never, "apply", it), { mode: "apply", prompt: "softmax of (0, ln 3)?", answer: "(1/4, 3/4)" }, "the first use-it ask: the first problem");
+		const it5 = { ...it, ratings: [...it.ratings, ...Array.from({ length: 3 }, () => ({ at: "x", rating: 3, source: "review", eventId: "e" }))] };
+		assert.equal(L.cardFace(card as never, "apply", it5 as never).prompt, "two", "the next use-it ask: the next problem");
+		assert.equal(store.hasCardMode({ [it.id]: { ...card, apply: [] } } as never)(it.id, "apply"), false, "an empty list is no mode");
+	});
+	it("a deck backlog comes at most 40 a day, the most forgotten first, and says how big it is", () => {
+		const ext = Array.from({ length: 60 }, (_, i) => ({ term: "w" + i, gloss: "g", deck: "bahasa", lang: "id", schedule: { stability: 5 + i, difficulty: 5, due: T0, lastReview: T0 - 10 * DAY, reps: 3 } }));
+		const st = M.deriveLearner([], { ...G0, external: ext as never }, T0 + 30 * DAY);
+		const q = M.reviewQueue(st, { deck: "bahasa", ...M.DECK_LIMITS, limit: 1000 });
+		assert.equal(q.filter((e) => e.reason === "due").length, 40);
+		assert.equal(q[0]!.itemId, "term:w0", "lowest recall first");
+		const c = M.dueCount(st, M.DECK_LIMITS.newPerDay, "bahasa", M.DECK_LIMITS.dueCap);
+		assert.deepEqual([c.due, c.backlog], [40, 60]);
+		const later = M.deriveLearner(Array.from({ length: 10 }, (_, i) => review("term:w" + i, 3, T0 + 30 * DAY + i)) as never, { ...G0, external: ext as never }, T0 + 30 * DAY + 100);
+		assert.equal(M.dueCount(later, 10, "bahasa", 40).due, 30, "the day's reviews count against the cap");
+	});
+});
+

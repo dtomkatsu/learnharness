@@ -35,6 +35,8 @@ export interface Card {
 	hook?: string;
 	/** For a language word: a sentence using it and its translation (cloze and the back of a card). */
 	example?: { sentence: string; translation: string };
+	/** Small fresh problems that USE the idea (compute, predict, decide) — asked in turn; [] when it cannot be applied. */
+	apply?: CardFace[];
 	/** Lapses when generated — regenerate elaboration/hook as they grow. */
 	lapsesAt: number;
 	generatedAt: string;
@@ -76,7 +78,10 @@ export function writeCards(cards: Record<ItemId, Card>): void {
 	fs.renameSync(tmp, CARDS);
 }
 
-export const hasCardMode = (cards: Record<ItemId, Card>) => (id: ItemId, mode: ReviewMode): boolean => !!(cards[id] as unknown as Record<string, unknown> | undefined)?.[mode];
+export const hasCardMode = (cards: Record<ItemId, Card>) => (id: ItemId, mode: ReviewMode): boolean => {
+	const f = (cards[id] as unknown as Record<string, unknown> | undefined)?.[mode];
+	return Array.isArray(f) ? f.length > 0 : !!f;
+};
 
 export interface ExternalDeck { deck: string; lang?: string; syncedAt: string; items: ExternalItem[] }
 
