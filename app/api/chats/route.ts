@@ -1,6 +1,6 @@
 import { chainsForSelection, formatChainLine } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
-import { compactionInFlight, createChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
+import { compactionInFlight, createChat, getChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
 
 /** The session picker's list: record-derived summaries (phase, pending
@@ -20,12 +20,24 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-	const body = (await req.json().catch(() => ({}))) as { title?: unknown; kind?: unknown; graphContext?: unknown };
+	const body = (await req.json().catch(() => ({}))) as { title?: unknown; kind?: unknown; graphContext?: unknown; parent?: unknown };
 	const title = typeof body.title === "string" ? body.title : "";
 	// Practice sessions (owner, 2026-10-04): kind "practice" marks the
 	// record — the practice agent + its tools from turn 1, no extraction.
 	const kind = body.kind === "practice" ? ("practice" as const) : undefined;
-	const chat = createChat(titleFromPrompt(title || "Untitled session"), kind);
+	// A side thread (2026-11): { parent: { id, term? } } files the new session
+	// under the session it was asked from. The parent must exist — a link to
+	// nothing is refused rather than stored.
+	let parent: { id: string; term?: string } | undefined;
+	if (body.parent !== undefined) {
+		const p = body.parent as { id?: unknown; term?: unknown };
+		if (typeof p !== "object" || p === null || typeof p.id !== "string" || !getChat(p.id)) {
+			return Response.json({ error: "parent must name an existing session" }, { status: 400 });
+		}
+		const term = typeof p.term === "string" ? p.term.trim().slice(0, 200) : "";
+		parent = term ? { id: p.id, term } : { id: p.id };
+	}
+	const chat = createChat(titleFromPrompt(title || "Untitled session"), kind, parent);
 	// PER-SESSION MODELS (owner, 2026-09-28): a session owns its model +
 	// thinking level from birth — stamped verbatim from the STRONG slot,
 	// the new-session default. From here the strong slot never reaches
@@ -67,5 +79,5 @@ export async function POST(req: Request) {
 		);
 		stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
 	}
-	return Response.json({ id: chat.id, title: chat.title });
+	return Response.json({ id: chat.id, title: chat.title, ...(chat.parent ? { parent: chat.parent } : {}) });
 }

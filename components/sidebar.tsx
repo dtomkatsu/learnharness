@@ -17,7 +17,7 @@ import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { fuzzyScore } from "@/src/core";
+import { fuzzyScore, nestChats } from "@/src/core";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import type { ChatListItem } from "@/src/core";
 import { kbdEventForAction } from "@/src/core";
@@ -291,6 +291,7 @@ export function SessionRow({
 	onOpen,
 	kbdSelected = false,
 	onContextMenu,
+	depth = 0,
 }: {
 	chat: ChatListItem;
 	active: boolean;
@@ -300,12 +301,17 @@ export function SessionRow({
 	kbdSelected?: boolean;
 	/** Right-click opens the context menu (wave 6: Rename / Delete). */
 	onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+	/** Side-thread nesting (2026-11): 0 = a session in its own right, 1+ =
+	 *  a thread asked from the row above it, indented a step per level. */
+	depth?: number;
 }) {
 	return (
 		<button
 			type="button"
 			onClick={onOpen}
 			onContextMenu={onContextMenu}
+			data-depth={depth || undefined}
+			style={depth ? { paddingLeft: `${0.75 + depth * 1.25}rem` } : undefined}
 			data-testid={kbdSelected ? "session-row-kbd" : "session-row"}
 			className={cn(
 				"relative mb-0.5 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent",
@@ -320,7 +326,10 @@ export function SessionRow({
 				    the meta line below stays JetBrains Mono (machine data). One
 				    rule, finally applied to the picker too (owner, typography
 				    round): mono = chrome, Source Sans = human words. */}
-				<span className="block truncate font-prose text-(length:--lh-prose-size)">{chat.title}</span>
+				<span className="block truncate font-prose text-(length:--lh-prose-size)">
+					{depth > 0 && <span className="mr-1 text-muted-foreground" aria-label="Side thread">↳</span>}
+					{chat.title}
+				</span>
 				<span className="block text-xs text-muted-foreground">{sessionMeta(chat)}</span>
 			</span>
 			{/* The dumbbell rides the FAR RIGHT (owner round 6, 2026-10-05) —
@@ -417,19 +426,26 @@ function SessionsSidebar() {
 	/* FUZZY (owner round 8, 2026-10-05): subsequence match ranked by
 	 * fuzzyScore — prefix beats word-boundary beats scattered. Empty query
 	 * keeps the natural list order (scores are all 0, sort is stable). */
-	const shown = useMemo(() => {
+	// Side threads (2026-11) sit indented under the session they were asked
+	// from — in the natural order only; a search lists matches flat, by score.
+	const { shown, depthOf } = useMemo(() => {
 		const q = query.trim();
 		let list = chats;
 		if (list && kindFilter !== "all") {
 			list = list.filter((c) => (c.kind ?? "teach") === kindFilter);
 		}
-		if (!list) return list;
-		if (!q) return list;
-		return list
+		const flat = new Map<string, number>();
+		if (!list) return { shown: list, depthOf: flat };
+		if (!q) {
+			const rows = nestChats(list);
+			return { shown: rows.map((r) => r.chat), depthOf: new Map(rows.map((r) => [r.chat.id, r.depth])) };
+		}
+		const scored = list
 			.map((c) => ({ c, score: fuzzyScore(q, c.title) }))
 			.filter((r): r is { c: (typeof list)[number]; score: number } => r.score !== null)
 			.sort((a, b) => b.score - a.score)
 			.map((r) => r.c);
+		return { shown: scored, depthOf: flat };
 	}, [chats, query, kindFilter]);
 
 	const refreshInFlightRef = useRef(false);
@@ -828,6 +844,7 @@ function SessionsSidebar() {
 									chat={c}
 									active={pathname === `/chat/${c.id}`}
 									kbdSelected={i === kbdIndex}
+									depth={depthOf.get(c.id) ?? 0}
 									onOpen={() => {
 										setKbdIndex(null);
 										router.push(`/chat/${c.id}`);

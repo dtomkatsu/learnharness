@@ -27,6 +27,19 @@ import type { EmissionStats } from "./graph.ts";
  *  practice agent, its two tools, no extraction, no graph writes. */
 export type ChatKind = "teach" | "practice";
 
+/** A side thread (2026-11): a question asked about a term in another session —
+ *  "define this", "go deeper on this" — is a session of its own that
+ *  remembers whose it is, so a list can show it indented under that session
+ *  instead of as a subject by itself. Set once, at creation; absent = a
+ *  session in its own right. A parent deleted later leaves the link
+ *  dangling, and the list then shows the thread at the top level. */
+export interface ChatParent {
+	/** The session it was asked from. */
+	id: string;
+	/** The words it was asked about, as marked (may be empty). */
+	term?: string;
+}
+
 export interface ChatRecord {
 	id: string;
 	title: string;
@@ -35,6 +48,8 @@ export interface ChatRecord {
 	messages: LhMessage[];
 	/** The session's kind — absent = teach (pre-practice records). */
 	kind?: ChatKind;
+	/** A side thread's session of origin (absent = top level). */
+	parent?: ChatParent;
 	/** The session's plan tree (vision §2) — written by plan tools via saveTree. */
 	tree?: PlanTree;
 	/** Append-only usage log (observability, 2026-09): one entry per model
@@ -263,6 +278,8 @@ export interface ChatSummary {
 	updatedAt: string;
 	/** Normalized kind (absent record field reads as teach). */
 	kind: ChatKind;
+	/** A side thread's session of origin (absent = top level). */
+	parent?: ChatParent;
 	messageCount: number;
 	/** The session's current phase, derived from the stored plan tree. */
 	phase: Phase3;
