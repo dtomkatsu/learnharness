@@ -24,6 +24,7 @@ import { addFlags, addTerms, heldTerms, normTerm, parseVocabularyReply, VOCABULA
 import { termItem, type LearnerEvent } from "../core/learner/model.ts";
 import { appendEvidence, readEvidence } from "../store/learner.ts";
 import { logRecordEvidence, loggedCallIds, missedWithThinking, tidySoon, unjudgedAnswers } from "./learner.ts";
+import { notesSoon } from "./notes.ts";
 
 export interface VocabularyCheckDeps {
 	chatStore: ChatStore;
@@ -80,7 +81,10 @@ export async function runAfterTurn(chatId: string, deps: VocabularyCheckDeps, te
 	try { logRecordEvidence(record, loggedCallIds()); }
 	catch (err) { console.error(`[chat ${chatId}] evidence logging failed:`, err); }
 	if (!teaching || record.kind === "practice") return false;
-	return runVocabularyCheck(chatId, deps);
+	const ok = await runVocabularyCheck(chatId, deps);
+	// the notes of a step just finished (after the check: it may have added terms and meanings)
+	if (deps.graphStore) notesSoon({ chatStore: deps.chatStore, graphStore: deps.graphStore }, chatId, deps.engine());
+	return ok;
 }
 
 /** One model check over the teaching since the last. Resolves true when the ledger took a reply. */

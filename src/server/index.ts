@@ -48,6 +48,7 @@ export { runPiTurn, piTurnResponse, type PiTurnHandle, type PiTurnSpec } from ".
 export * from "./observability.ts";
 export * from "./model-catalog.ts";
 export * from "./learner.ts";
+export * from "./notes.ts";
 export { appendEvidence, readEvidence, readCards, type Card, type CardFace } from "../store/learner.ts";
 export { subscriptionControlsResponse, subscriptionBrowserResponse } from "./web-subscription-http.ts";
 export { sessionCost } from "./pricing.ts";

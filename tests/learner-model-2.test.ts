@@ -361,3 +361,47 @@ describe("memory: relearning, held later, use it, confident misses, a backlog", 
 	});
 });
 
+describe("lesson notes", async () => {
+	const N = await import("../src/server/notes.ts");
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const asst = (id: string, content: unknown[]) => ({ id, role: "assistant", content, stopReason: "stop", api: "x", provider: "x", model: "x", usage, timestamp: 1 });
+	function lesson() {
+		const c = chatStore.createChat("Dot products");
+		chatStore.saveMessages(c.id, [
+			{ id: "u1", role: "user", content: [{ type: "text", text: "teach me" }], timestamp: 1 },
+			asst("a1", [{ type: "text", text: "A vector is a list of numbers, like (9, 1)." }]),
+			asst("a2", [{ type: "text", text: "Each slot means something." }, { type: "toolCall", id: "q1", name: "quiz", arguments: { nodeId: "v", type: "check", question: "What is (9,1)?", options: ["a number", "a list of two numbers"], correctAnswer: 2, explanation: "A vector is a list." } }]),
+			{ id: "r1", role: "toolResult", toolCallId: "q1", toolName: "quiz", content: [{ type: "text", text: "{}" }], details: { kind: "quiz", questionText: "What is (9,1)?", questionType: "check", answers: [{ label: "a number", index: 1 }], correct: false, confidence: 80 }, isError: false, timestamp: Date.now() - 3 * HOUR },
+			asst("a3", [{ type: "text", text: "Multiply matching slots and add: (1,2)·(3,4) = 3 + 8 = 11." }, { type: "toolCall", id: "q2", name: "quiz", arguments: { nodeId: "d", type: "check", question: "(1,0)·(0,1)?" } }]),
+			asst("a4", [{ type: "text", text: "Next we will see angles." }]),
+		] as never);
+		chatStore.saveTree(c.id, { version: 1, nodes: [{ id: "v", title: "Vectors" }, { id: "d", title: "Dot product" }, { id: "x", title: "Angles" }], edges: [] } as never);
+		chatStore.updateVocabulary!(c.id, (v) => { v.planned = { v: { introduces: ["slot list"], needs: [] } }; v.terms.push({ term: "slot list", gloss: "a list of numbers", source: "taught", at: "t" }); });
+		L.logRecordEvidence(chatStore.getChat(c.id)!);
+		return c.id;
+	}
+	it("cuts the lesson into steps: the teaching before a tagged question is that step's", () => {
+		const segs = N.stepSegments(chatStore.getChat(lesson())!);
+		assert.deepEqual([...segs.keys()], ["v", "d"]);
+		assert.match(segs.get("v")!.teaching.join(" "), /list of numbers[\s\S]*Each slot/);
+		assert.doesNotMatch(segs.get("d")!.teaching.join(" "), /angles/, "teaching after the last question is not assigned yet");
+	});
+	it("writes the notes of finished steps, with his mistakes corrected; the current step waits", async () => {
+		const id = lesson();
+		const seen = { text: "" };
+		const r = await N.writeLessonNotes(deps, id, engineOf({ steps: [{ nodeId: "v", idea: "A vector is a list of numbers; each slot means something.", mistakes: [{ i: 0, correction: "You read (9, 1) as one number; it is two numbers in two slots." }] }] }, seen), 10);
+		assert.equal(r.written, 1);
+		assert.match(seen.text, /his.{1,8}a number[\s\S]*right.{1,8}a list of two numbers/, "his answer and the right one went to the writer");
+		const v = N.notesView(deps, id)!;
+		assert.deepEqual(v.steps.map((s) => [s.nodeId, s.finished, !!s.note]), [["v", true, true], ["d", false, false], ["x", false, false]]);
+		const nv = v.steps[0]!.note!;
+		assert.deepEqual(nv.terms, [{ term: "slot list", gloss: "a list of numbers" }]);
+		assert.deepEqual(nv.mistakes, [{ question: "What is (9,1)?", yours: "a number", correction: "You read (9, 1) as one number; it is two numbers in two slots." }]);
+		const md = N.notesMarkdown(v);
+		assert.match(md, /^# Dot products[\s\S]*## ✗ Vectors[\s\S]*\*\*Terms:\*\* \*slot list\* — a list of numbers[\s\S]*you said “a number”/);
+		const again = await N.writeLessonNotes(deps, id, engineOf({ steps: [] }), 10);
+		assert.equal(again.written, 0, "nothing changed: nothing rewritten");
+		assert.deepEqual(L.noteFor(L.learnerState(deps), "term:slot list"), { chatId: id, nodeId: "v" });
+	});
+});
+

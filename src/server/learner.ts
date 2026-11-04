@@ -292,6 +292,7 @@ export function queueView(state: LearnerState, opts: { limit?: number; only?: Se
 			...q, mode: f.mode, label: it.label, kind: it.kind, prompt: f.prompt, answer: f.answer, ...(f.speak ? { speak: f.speak } : {}),
 			...(it.lang ? { lang: it.lang } : {}), ...(it.audio ? { audio: it.audio } : {}), ...(it.deck ? { deck: it.deck } : {}),
 			...(c.example ? { example: c.example } : {}),
+			...((n) => (n ? { note: n } : {}))(noteFor(state, q.itemId)),
 			...(it.lapses >= 2 && c.elaboration ? { elaboration: c.elaboration } : {}),
 			...(it.lapses >= 3 && c.hook ? { hook: c.hook } : {}),
 			...(q.mode === "discriminate" && c.discriminate ? { with: c.discriminate.with } : {}),
@@ -737,4 +738,11 @@ export function confidentMissNote(state: LearnerState, record: ChatRecord): { te
 		text: "[Confident miss] " + misses.map((a) => `He answered "${a.question.slice(0, 160)}" ${a.confidence}% sure, and wrong${a.thinking ? ` (his reasoning: "${a.thinking.slice(0, 200)}")` : ""}.`).join(" ") +
 			" A mistake made with confidence is the one most often corrected for good once it is named: say exactly which distinction he missed, ask what made his answer seem right, and come back to it with a fresh question a few turns from now.",
 	};
+}
+
+/** Which lesson step an item was last checked in — the note to read after missing it in review. */
+export function noteFor(state: LearnerState, itemId: ItemId): { chatId: string; nodeId: string } | null {
+	let best: { chatId: string; nodeId: string; at: string } | null = null;
+	for (const [chatId, answers] of state.answersByChat) for (const a of answers) if (a.planNode && a.items.includes(itemId) && (!best || a.at > best.at)) best = { chatId, nodeId: a.planNode, at: a.at };
+	return best ? { chatId: best.chatId, nodeId: best.nodeId } : null;
 }
