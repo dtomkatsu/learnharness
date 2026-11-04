@@ -424,6 +424,16 @@ export function quizMechanics(enabled?: EnabledTools): "choice" | "free" {
 	return enabled?.explain === true ? "free" : "choice";
 }
 
+/** The TEACHER's mechanics (fork, 2026-11): unless the settings pin one
+ *  (explain true = free only, explain false = choice only), it gets BOTH
+ *  quizzing tools — quiz for telling specific wrong models apart, explain for
+ *  understanding that shows in how he says it (teacher/20-teaching.md says
+ *  when). With choice alone a whole lesson was 65 multiple-choice questions
+ *  and no answer in his own words. The prober keeps quizMechanics. */
+export function teachMechanics(enabled?: EnabledTools): "choice" | "free" | "mixed" {
+	return enabled?.explain === true ? "free" : enabled?.explain === false ? "choice" : "mixed";
+}
+
 /** Strip the mechanics keys so filterEnabledTools can never drop the
  *  quizzing tools (the derivation above is their only switch). */
 function withoutMechanics(enabled?: EnabledTools): EnabledTools | undefined {
@@ -439,11 +449,13 @@ export function createTeacherTools(
 	// Quizzing mechanics (owner 2026-09-27): free-recall swaps the teach
 	// quiz for the teach explain — one quizzing tool at a time, whichever
 	// the settings arm. ask stays always-on.
-	const mechanics = quizMechanics(enabled);
+	const mechanics = teachMechanics(enabled);
 	// Same widening as the prober's (see above) — the conditional spread of
 	// two differently-typed literals collapses into an unusable union type.
 	const quizzing: Record<string, AgentTool<any>> =
-		mechanics === "free" ? { explain: teachExplainToolFor(ctx) } : { quiz: teachQuizToolFor(ctx) };
+		mechanics === "free" ? { explain: teachExplainToolFor(ctx) }
+		: mechanics === "choice" ? { quiz: teachQuizToolFor(ctx) }
+		: { quiz: teachQuizToolFor(ctx), explain: teachExplainToolFor(ctx) };
 	// healToolRecord — same standard as the prober's registry (above).
 	return healToolRecord(
 		filterEnabledTools(

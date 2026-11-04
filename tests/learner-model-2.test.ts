@@ -283,3 +283,15 @@ describe("the map, and terms used before they were taught", () => {
 		assert.equal(h.weeks.find((w) => w.taught === 2)!.rate, 50);
 	});
 });
+
+describe("the question mix", () => {
+	it("counts checks with options against answers in his own words, week by week", () => {
+		const now = T0 + 20 * DAY;
+		const a = (tool: string, t: number) => ev({ kind: "answer", chatId: "c1", messageId: "m", toolCallId: "x" + n, tool, question: "q", outcome: "correct", items: [] }, t);
+		const st = M.deriveLearner([a("quiz", T0), a("quiz", T0 + 1), a("probe", T0 + 2), a("quiz", now - DAY), a("explain", now - DAY), a("explain", now - DAY)], G0, now);
+		const q = M.questionMix(st);
+		assert.deepEqual([q.choice, q.own, q.ownShare], [3, 2, 40], "the probe is not counted");
+		assert.deepEqual([q.weeks.at(-1)!.choice, q.weeks.at(-1)!.own], [1, 2]);
+	});
+});
+

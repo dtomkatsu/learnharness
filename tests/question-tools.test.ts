@@ -294,11 +294,15 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 			jobStore,
 			spawn: () => {},
 		};
+		// fork 2026-11: unpinned, the teacher has BOTH quizzing tools (teachMechanics)
 		const full = Object.keys(createTeacherTools(ctx)).sort();
-		assert.deepEqual(full, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "research", "visual"]);
+		assert.deepEqual(full, ["ask_user_question", "demo", "explain", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "research", "visual"]);
 
 		const noResearch = Object.keys(createTeacherTools(ctx, { research: false })).sort();
-		assert.deepEqual(noResearch, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "visual"]);
+		assert.deepEqual(noResearch, ["ask_user_question", "demo", "explain", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "visual"]);
+
+		// pinned to options only
+		assert.deepEqual(Object.keys(createTeacherTools(ctx, { explain: false })).sort(), full.filter((t) => t !== "explain"));
 
 		// absent = enabled: an empty record and undefined behave identically
 		assert.deepEqual(

@@ -773,3 +773,28 @@ export function isJunkTerm(term: string): boolean {
 	if (/^[\p{N}\s.,]+$/u.test(t)) return true;
 	return [...t.replace(/[^\p{L}]/gu, "")].length <= 1 && !/[\^_=+*\/×·√∑∫-]/.test(t);
 }
+
+// ─── the question mix: options vs. his own words ────────────────────────────
+
+export interface QuestionMix {
+	/** Teach-phase checks and predictions answered: with options (quiz) and in his own words (explain). */
+	choice: number;
+	own: number;
+	/** Share in his own words (0–100), null with none. */
+	ownShare: number | null;
+	weeks: { week: string; choice: number; own: number }[];
+}
+
+/** How the lessons ask (fork 2026-11): a lesson of only options never shows he can produce an idea himself. */
+export function questionMix(state: LearnerState, weeks = 6): QuestionMix {
+	const ans = state.events.filter((e): e is Extract<LearnerEvent, { kind: "answer" }> => e.kind === "answer" && (e.tool === "quiz" || e.tool === "explain"));
+	const monday = (ms: number) => { const d = new Date(ms); d.setUTCHours(0, 0, 0, 0); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+	const out: QuestionMix["weeks"] = [];
+	for (let i = weeks - 1; i >= 0; i--) {
+		const w = monday(state.now - i * 7 * 86400000);
+		const inWeek = ans.filter((e) => monday(Date.parse(e.at)) === w);
+		out.push({ week: w, choice: inWeek.filter((e) => e.tool === "quiz").length, own: inWeek.filter((e) => e.tool === "explain").length });
+	}
+	const choice = ans.filter((e) => e.tool === "quiz").length, own = ans.length - choice;
+	return { choice, own, ownShare: ans.length ? Math.round((100 * own) / ans.length) : null, weeks: out };
+}
