@@ -562,7 +562,7 @@ export async function lessonStart(deps: LearnerDeps, state: LearnerState, record
 	let summary = record.vocabulary?.recap?.through === last.id ? record.vocabulary.recap.text : null;
 	if (!summary && engine) {
 		const tail = (record.messages as LhMessage[]).map((m) => ({ role: (m as { role?: string }).role, t: textOf(m) })).filter((x) => x.t).slice(-12)
-			.map((x) => `${x.role === "user" ? "LEARNER" : "TUTOR"}: ${x.t.slice(0, 1500)}`).join("\n\n");
+			.map((x) => `${x.role === "user" ? "LEARNER" : "TUTOR"}: ${x.t.length > 1500 ? x.t.slice(0, 400) + " […] " + x.t.slice(-1100) : x.t}`).join("\n\n");
 		try {
 			const { text } = await runSubagent([], { role: "auditor", engine, systemPrompt: RECAP_PROMPT, prompt: `LESSON: ${record.title}\n${cur ? `CURRENT STEP: ${title(cur)}\n` : ""}\n${tail}`, maxTurns: 1, chatId: record.id });
 			summary = text.trim().slice(0, 800) || null;
