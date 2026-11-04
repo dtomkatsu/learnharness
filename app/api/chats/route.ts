@@ -1,6 +1,6 @@
 import { chainsForSelection, formatChainLine, termItem } from "@/src/core";
-import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
-import { appendEvidence, compactionInFlight, createChat, getChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
+import { newGraphContextMessage, newLessonNotesMessage, type GraphContextPick } from "@/src/core";
+import { appendEvidence, compactionInFlight, createChat, getChat, isTurnRunning, listChats, readSettingsRecord, sideQuestionContext, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
 
 /** The session picker's list: record-derived summaries (phase, pending
@@ -86,13 +86,21 @@ export async function POST(req: Request) {
 					)
 					.slice(0, 64)
 			: [];
+	// A side question starts knowing its lesson (2026-11): the lesson's step,
+	// terms, the term's first use and newest teaching, as a model-only note.
+	const initial: Parameters<typeof stores.chatStore.saveMessages>[1] = [];
+	if (parent) {
+		const p = stores.chatStore.getChat(parent.id);
+		if (p) try { initial.push(newLessonNotesMessage(sideQuestionContext(p, parent.term), { sideContext: parent.id }) as never); } catch (err) { console.error(`[chat ${chat.id}] side-question context failed:`, err); }
+	}
 	if (picks.length > 0) {
 		const byId = new Map(stores.graphStore.readNodes().map((n) => [n.id, n]));
 		const pickedNodes = picks.map((p) => byId.get(p.id)).filter((n) => n !== undefined);
 		const chainLines = chainsForSelection(pickedNodes, stores.graphStore.readChains()).map((c) =>
 			formatChainLine(c, Object.fromEntries(byId)),
 		);
-		stores.chatStore.saveMessages(chat.id, [newGraphContextMessage(picks, chainLines)]);
+		initial.push(newGraphContextMessage(picks, chainLines));
 	}
+	if (initial.length) stores.chatStore.saveMessages(chat.id, initial);
 	return Response.json({ id: chat.id, title: chat.title, ...(chat.parent ? { parent: chat.parent } : {}) });
 }

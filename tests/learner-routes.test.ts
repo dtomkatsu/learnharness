@@ -164,3 +164,28 @@ describe("the profile reaches the lesson's first turn", () => {
 		piModels().deleteProvider(pid);
 	});
 });
+
+describe("a side question knows its lesson", () => {
+	it("the new thread starts with a model-only note: the lesson's step, terms, the term's first use and newest teaching", async () => {
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		const lesson = chatStore.createChat("Attention in transformers");
+		chatStore.saveMessages(lesson.id, [
+			{ id: "u1", role: "user", content: [{ type: "text", text: "teach me attention" }], timestamp: 1 },
+			{ id: "a1", role: "assistant", content: [{ type: "text", text: "Each word has a value table row: the money part and the action part." }], stopReason: "stop", api: "x", provider: "x", model: "x", usage, timestamp: 2 },
+			{ id: "a2", role: "assistant", content: [{ type: "text", text: "Now the shares: bank attends to deposited with 0.95." }, { type: "toolCall", id: "q1", name: "quiz", arguments: { nodeId: "s", question: "Which word gets the biggest share?" } }], stopReason: "toolUse", api: "x", provider: "x", model: "x", usage, timestamp: 3 },
+		] as never);
+		chatStore.saveTree(lesson.id, { version: 1, nodes: [{ id: "s", title: "Shares from softmax" }], edges: [] } as never);
+		chatStore.updateVocabulary!(lesson.id, (v) => { v.terms.push({ term: "value table", gloss: "turns a word into what it contributes", source: "taught", at: "t" }); });
+		const r = await (await chats.POST(post("/api/chats", { title: "More on value table", parent: { id: lesson.id, term: "value table" } }))).json();
+		const side = chatStore.getChat(r.id)!;
+		const first = side.messages[0] as any;
+		assert.equal(first.customType, "lesson-notes");
+		assert.match(first.content, /^\[Side question context\][\s\S]*"Attention in transformers"/);
+		assert.match(first.content, /at the step "Shares from softmax"/);
+		assert.match(first.content, /value table \(turns a word into what it contributes\)/);
+		assert.match(first.content, /Where the lesson first used "value table":\nEach word has a value table row: the money part/);
+		assert.match(first.content, /bank attends to deposited with 0\.95[\s\S]*Question asked: Which word gets the biggest share\?/);
+		const plain = await (await chats.POST(post("/api/chats", { title: "A new lesson" }))).json();
+		assert.equal(chatStore.getChat(plain.id)!.messages.length, 0, "a lesson of its own starts empty");
+	});
+});

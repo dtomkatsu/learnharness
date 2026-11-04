@@ -623,3 +623,48 @@ export function knowledgeMap(deps: LearnerDeps, state: LearnerState) {
 		.slice(0, 12).map((it) => ({ id: it.id, label: it.label }));
 	return { lessons, chains, ready };
 }
+
+// ─── a side question's view of its lesson ───────────────────────────────────
+
+/**
+ * What a side question is told about the lesson it was asked from (2026-11): the
+ * lesson's step, its terms as taught, where the term was first used, and the
+ * newest teaching — so the answer uses the lesson's own names, numbers and
+ * examples. Before this the side thread saw one paragraph (or, from a glossary
+ * page, nothing) and said so ("I can't see the lesson's earlier setup…").
+ * Model-only: it rides the new chat as a lesson-notes marker.
+ */
+export function sideQuestionContext(parent: ChatRecord, term?: string, budget = 9000): string {
+	const ms = parent.messages as LhMessage[];
+	const said = (m: LhMessage) => {
+		const x = m as unknown as { role?: string; content?: Block[] | string };
+		if (x.role !== "assistant" || !Array.isArray(x.content)) return "";
+		const out: string[] = [];
+		for (const b of x.content) {
+			if (b.type === "text" && b.text) out.push(b.text);
+			else if (b.type === "toolCall" && b.name && QUESTIONS.has(b.name) && typeof b.arguments?.question === "string") out.push("(Question asked: " + b.arguments.question + ")");
+		}
+		return out.join("\n").trim();
+	};
+	const cur = currentPlanNode(parent);
+	const step = cur ? parent.tree?.nodes.find((n) => n.id === cur)?.title : null;
+	const held = (parent.vocabulary?.terms ?? []).filter((t) => t.gloss).slice(0, 40).map((t) => `${t.term} (${t.gloss})`);
+	const lines = [`[Side question context] — this session is a side question from the lesson "${parent.title}". The learner sees none of this note; use it to answer in the lesson's own terms, names, numbers and examples, and do not say you cannot see the lesson.`];
+	if (step) lines.push(`The lesson is at the step "${step}".`);
+	if (held.length) lines.push("Terms the lesson has taught, with its meanings: " + held.join("; ") + ".");
+	let room = budget;
+	if (term) {
+		const k = term.toLowerCase();
+		const first = ms.find((m) => said(m).toLowerCase().includes(k));
+		if (first) { const t = said(first), i = t.toLowerCase().indexOf(k); const cut = t.slice(Math.max(0, i - 700), i + 900); lines.push("", `Where the lesson first used "${term}":`, cut); room -= cut.length; }
+	}
+	const recent: string[] = [];
+	for (let i = ms.length - 1; i >= 0 && room > 400; i--) {
+		const t = said(ms[i]!); if (!t) continue;
+		const piece = t.length > room ? "…" + t.slice(-room) : t;
+		recent.unshift(piece); room -= piece.length;
+		if (recent.length >= 8) break;
+	}
+	if (recent.length) lines.push("", "The lesson's newest teaching, oldest first:", recent.join("\n\n---\n\n"));
+	return lines.join("\n");
+}
