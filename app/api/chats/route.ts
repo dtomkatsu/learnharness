@@ -1,6 +1,6 @@
-import { chainsForSelection, formatChainLine } from "@/src/core";
+import { chainsForSelection, formatChainLine, termItem } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
-import { compactionInFlight, createChat, getChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
+import { appendEvidence, compactionInFlight, createChat, getChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
 
 /** The session picker's list: record-derived summaries (phase, pending
@@ -47,6 +47,8 @@ export async function POST(req: Request) {
 			stores.chatStore.updateVocabulary?.(parent.id, (v) => {
 				v.sideQuestions.push({ chatId: chat.id, term, at: new Date().toISOString() });
 			});
+			// …and to the learner model: an asked term is reviewable, first in line.
+			appendEvidence([{ kind: "asked", itemId: termItem(term), term, chatId: parent.id, sideChatId: chat.id } as never]);
 		} catch (err) {
 			console.error(`[chat ${parent.id}] side-question note failed:`, err);
 		}

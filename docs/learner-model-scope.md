@@ -1,6 +1,6 @@
 # Learner model, progress, terms and memorization — scope
 
-Status: proposal (2026-11-04). Nothing here is built. Branch `side-threads` on the dtomkatsu fork.
+Status: **built 2026-11-04** on branch `side-threads` (dtomkatsu fork) — see *As built* at the end. LearnHarness's own web UI does not show it yet; the e-ink reader (Boox Paper's Learn page) does.
 
 ## Where things stand
 
@@ -128,3 +128,36 @@ About **2½–3 weeks** end to end; the first useful slice (0 + term reviews) is
 - **Wrong grades** erode trust — the one-tap overrule and showing the model's reason matter more than grader accuracy.
 - **Nagging.** Due counts must never interrupt a lesson; reviews are offered, not pushed (no notifications by default).
 - **Identity drift.** Terms and propositions merge by the auditor's judgment; a wrong merge would pool two items' histories. Conservative merging (the auditor's existing rule) and a "split" action in the glossary.
+
+
+## As built (2026-11-04)
+
+| Piece | Where |
+|---|---|
+| FSRS-6 (adapted from ts-fsrs via upstream's flashcards plugin, MIT) | `src/core/learner/fsrs.ts` |
+| Evidence types, derivation, queue, progress, digest, glossary, profile | `src/core/learner/model.ts` (pure) |
+| Evidence log + cards | `src/store/learner.ts` → `data/learner/evidence.jsonl`, `data/learner/cards.json` |
+| Writers (answers, practice, backfill), cards, grading, lesson notes | `src/server/learner.ts` |
+| After-turn check (terms, verdicts, misconceptions, uses, drift) | `src/server/vocabulary-check.ts` |
+| Notes into turns (profile, due, never stuck, unchecked, drift) | `src/server/chat-handler.ts` |
+| API | `app/api/learner/{,items,item,review,review/overrule,progress/[id],glossary}` |
+| Tests | `tests/learner-model.test.ts`, `tests/learner-routes.test.ts`, `tests/vocabulary.test.ts` |
+
+Decisions taken: FSRS-6 (not 4.5 — upstream already had a tested port); model-graded free recall with a one-tap overrule, plus show-and-self-grade; fork-only for now.
+
+Deviations from the plan: review runs as an API + the tablet's screens, not as a new LearnHarness session kind with its own agent (no conversation is needed to grade one card — one cheap call is). Items are terms and graph propositions; plan nodes map to terms through the plan's vocabulary, and an answer is joined to the propositions extracted from the teaching just before it (the messages since the previous answer, ≤4 propositions).
+
+### What this replaces — the old events ledger vs. the learner model
+
+| | Events ledger (removed 2026-09-27) | Learner model |
+|---|---|---|
+| Recorded | quiz outcome (correct / miss / don't-know + note); one closed-scale understanding word per node per session | every answer (probe, check, prediction, explain), with confidence and reasoning; practice outcomes with hint level; reviews; terms taught / used early / asked about; the learner's own correct and wrong uses; misconceptions verbatim; term drift |
+| Attributed to | graph nodes, by the extractor's retroactive judgment | terms (via the plan's declared vocabulary) and propositions (provenance join on the teaching the question checked; practice targets directly) |
+| Derived state | none — "state-neutral nodes until the state model is designed" | per item: FSRS schedule, retrievability now, status (new / learning / solid / fragile / misunderstood / never stuck / set aside), weakest premise; calibration |
+| Things that are not evidence | counted alike | a missed prediction or probe is not a lapse; an unsure right answer is "hard"; an explain answer waits for the tutor's verdict; a correct use counts only once the item had begun to fade |
+| Read back into teaching | never | profile at the start of each lesson (prober too), due related items every 4th turn, leeches, unchecked earlier steps, drift |
+| Memorization | none | spaced review queue with recall / produce / why / cloze / tell-apart cards, model grading, elaboration after 2 lapses, a true memory hook after 3, leeches sent back to teaching |
+| Progress | none | per lesson (checked / repaired / missed / open, frontier, established / shaky), weekly digest, glossary |
+| History | deleted with the ledger | rebuilt from the transcripts on first use (`backfillEvidence`, idempotent) |
+
+Measured on a copy of the live data (24 sessions), real cheap model (claude-code haiku): backfill 72 answers in 17 ms; 27 of 29 propositions get a state from past answers (3 of 29 with a same-message join only — the teaching-window join is what makes the history usable); calibration 77% right at 66% mean confidence, 10% of ≥75%-confident answers wrong; three cards written in 7–12 s; a grade in ~1.5 s; the after-turn check on the Indonesian lesson recorded 18 taught words and flagged the four forms used before teaching (-nya, -lah, deh, kan).

@@ -48,6 +48,7 @@ import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-ser
 import { hasProbeDone, hasUnresolvedQuestion, newLessonNotesMessage } from "../core/native-messages.ts";
 import { lessonNotesText, normTerm } from "../core/vocabulary.ts";
 import { triggerVocabularyCheck } from "./vocabulary-check.ts";
+import { learnerNotes, learnerState, type LearnerNotes } from "./learner.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./compaction.ts";
 import { catalogContextLimits, refreshConnectionCatalog } from "./model-catalog.ts";
@@ -153,6 +154,16 @@ setTurnRunner(async (chatId, input) => {
 function resolveEngine(role: ModelRole): PiEngine | undefined {
 	const spec = resolveRoleSpec(role, stores.settingsStore.readSettings());
 	return spec ? piEngineForSpec(spec, true, undefined, retentionForSlot(ROLE_SLOT[role])) : undefined;
+}
+
+/** The cheap-slot engine the learner routes use (2026-11): grading is the
+ *  learner's own request (foreground); card writing ahead of time is
+ *  background and honors the connection's background opt-in. */
+export function learnerEngine(background: boolean): PiEngine | undefined {
+	const engine = resolveEngine("auditor");
+	if (!engine || !providerKeyPresent(engine.model.provider)) return undefined;
+	if (background && !connectionBackgroundAllowed(engine.model.provider)) return undefined;
+	return engine;
 }
 
 /** Slot policy is independent of model overrides. Read fresh per operation,
@@ -371,11 +382,20 @@ export async function handleChatInput(
 	// answer's tool result stays adjacent to its call; the marker appends to
 	// the tail, so the cached prefix is untouched). Learner-driven teaching
 	// turns only: never a wake, retry or continuation, never practice/probe.
-	const noteable = (input.type === "text" || input.type === "answer") && record.kind !== "practice" && hasProbeDone(record.messages);
+	const learnerTurn = (input.type === "text" || input.type === "answer") && record.kind !== "practice";
+	const noteable = learnerTurn && hasProbeDone(record.messages);
 	const pendingFlags = noteable ? record.vocabulary?.flagged ?? [] : [];
 	const pendingSide = noteable ? record.vocabulary?.sideQuestions ?? [] : [];
-	const notesText = noteable ? lessonNotesText(pendingFlags, pendingSide) : null;
-	const notes = notesText ? newLessonNotesMessage(notesText, { flagged: pendingFlags, sideQuestions: pendingSide }) : null;
+	// The learner model's part (2026-11): the profile at the lesson's first
+	// learner turn (the prober's too), due related items, leeches, unchecked
+	// earlier steps, term drift — see server/learner.ts learnerNotes.
+	let learnerPart: LearnerNotes | null = null;
+	if (learnerTurn) {
+		try { learnerPart = learnerNotes(learnerState({ chatStore: stores.chatStore, graphStore: stores.graphStore }), record, noteable); }
+		catch (err) { console.error(`[chat ${chatId}] learner notes failed:`, err); }
+	}
+	const notesText = [noteable ? lessonNotesText(pendingFlags, pendingSide) : null, ...(learnerPart?.sections ?? [])].filter(Boolean).join("\n\n") || null;
+	const notes = notesText ? newLessonNotesMessage(notesText, { flagged: pendingFlags, sideQuestions: pendingSide, learner: learnerPart?.sections.length ?? 0 }) : null;
 	const merged = [...record.messages, ...appends, ...(notes ? [notes] : [])];
 	// Retry preserves every persisted attempt. Pi needs a non-assistant
 	// tail to start continue(), so its temporary history omits the trailing
@@ -390,6 +410,22 @@ export async function handleChatInput(
 		console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 		endTurn(chatId);
 		return new Response("Your input could not be saved. Please try again.", { status: 500 });
+	}
+	// The learner model's bookkeeping (what was handed over, the turn count) —
+	// recorded even when nothing was said, so the profile is offered once.
+	if (learnerPart) {
+		const mark = learnerPart.mark;
+		try {
+			stores.chatStore.updateVocabulary?.(chatId, (v) => {
+				if (mark.profiled) v.profiled = true;
+				if (mark.dueTurn != null) v.noteTurns = mark.dueTurn;
+				if (mark.leeches) v.notedLeeches = mark.leeches;
+				if (mark.unchecked) v.notedUnchecked = mark.unchecked;
+				if (mark.drift) v.notedDrift = mark.drift;
+			});
+		} catch (err) {
+			console.error(`[chat ${chatId}] learner-notes bookkeeping failed:`, err);
+		}
 	}
 	// The notes are on disk: what they carried is no longer waiting.
 	if (notes) {
@@ -636,12 +672,14 @@ export async function handleChatInput(
 				// THE VOCABULARY CHECK (2026-11): teaching turns only — one cheap call
 				// sorts the new teaching's terms into taught / used-too-early / the
 				// learner's own; its flags reach the teacher as next turn's notes.
-				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && teaching) {
+				// Every turn's answers and practice results go to the learner model's
+				// evidence log (no model call); teaching turns also get the check.
+				if (!requestCycle || requestCycle.dispatched) {
 					triggerVocabularyCheck(chatId, {
 						chatStore: stores.chatStore,
 						engine: () => resolveEngine("auditor"),
 						canStart: (provider) => providerKeyPresent(provider) && connectionBackgroundAllowed(provider),
-					});
+					}, record.kind !== "practice" && teaching);
 				}
 				// PARKED DISMISSAL (owner, 2026-10-04): a dismissal that arrived
 				// mid-turn was parked by the dismiss route (202); now that

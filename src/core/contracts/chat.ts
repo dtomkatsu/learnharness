@@ -75,6 +75,16 @@ export interface LessonVocabulary {
 	sideQuestions: VocabSideQuestion[];
 	/** The newest assistant message the check has read. */
 	checkedThrough?: string;
+	/** When the check last ran (answers after it are new to it). */
+	checkedAt?: string;
+	/** Learner-model notes already handed over (2026-11): the profile (once per
+	 *  lesson), the teaching-turn count (due items every 4th), leeches, plan
+	 *  nodes whose unchecked ancestors were named, drift events named. */
+	profiled?: boolean;
+	noteTurns?: number;
+	notedLeeches?: string[];
+	notedUnchecked?: string[];
+	notedDrift?: string[];
 }
 
 export interface ChatParent {

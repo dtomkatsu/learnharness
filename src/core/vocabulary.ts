@@ -144,15 +144,27 @@ Find every TECHNICAL term — jargon, notation, named concepts, acronyms — in 
 - "unexplained": it is used as if the learner already knew it, but it is not in the held list, the learner has not used it themselves, and the teaching does not explain it where it is used. Say briefly where it appears.
 - Ignore everyday words, terms in the held list, and terms the learner used first (put those in "learnerUsed").
 
-Be strict about "unexplained" only for words a learner at this level could not be expected to know; when in doubt, leave it out.
+Be strict about "unexplained" only for words a learner at this level could not be expected to know; when in doubt, leave it out. General school vocabulary (noun, verb, pronoun, prefix, suffix, particle, fraction, probability, average, function…) is NOT unexplained unless the learner showed they lack it; flag the subject's own terms, not the language used to talk about any subject.
+
+Then, about the LEARNER (only from what they wrote):
+- "usedCorrectly": HELD terms the learner used themselves, correctly, in their own words.
+- "misused": HELD terms the learner used wrongly — {"term","how"}.
+- "drift": HELD terms the TUTOR (or learner) now uses with a different meaning than the one in the held list — {"term","taughtAs","nowAs"}.
+- "verdicts": for each UNGRADED ANSWER listed, whether the tutor's newest teaching judged it right — {"id","correct":true|false}. Omit any the teaching does not judge.
+- "misconceptions": for each MISSED or ungraded-wrong answer whose reasoning states a SPECIFIC wrong belief — {"id","term"?,"belief"} (belief: one short sentence, in the learner's terms; term: the held term it is about, if one). Not for blanks or guesses.
 
 Reply with JSON only, no prose:
-{"introduced":[{"term":"…","gloss":"…"}],"unexplained":[{"term":"…","where":"…"}],"learnerUsed":["…"]}`;
+{"introduced":[{"term":"…","gloss":"…"}],"unexplained":[{"term":"…","where":"…"}],"learnerUsed":["…"],"usedCorrectly":["…"],"misused":[{"term":"…","how":"…"}],"drift":[{"term":"…","taughtAs":"…","nowAs":"…"}],"verdicts":[{"id":"…","correct":true}],"misconceptions":[{"id":"…","term":"…","belief":"…"}]}`;
 
 export interface VocabularyCheckReply {
 	introduced: { term: string; gloss: string }[];
 	unexplained: { term: string; where: string }[];
 	learnerUsed: string[];
+	usedCorrectly: string[];
+	misused: { term: string; how: string }[];
+	drift: { term: string; taughtAs: string; nowAs: string }[];
+	verdicts: { id: string; correct: boolean }[];
+	misconceptions: { id: string; term: string; belief: string }[];
 }
 
 /** The checker\x27s JSON, tolerant of a code fence or prose around it; null when unreadable. */
@@ -165,12 +177,17 @@ export function parseVocabularyReply(text: string): VocabularyCheckReply | null 
 		introduced: arr(o.introduced).map((x: any) => ({ term: str(x?.term), gloss: str(x?.gloss) })).filter((x) => x.term).slice(0, 40),
 		unexplained: arr(o.unexplained).map((x: any) => ({ term: str(x?.term), where: str(x?.where) })).filter((x) => x.term).slice(0, 20),
 		learnerUsed: arr(o.learnerUsed).map(str).filter(Boolean).slice(0, 40),
+		usedCorrectly: arr(o.usedCorrectly).map(str).filter(Boolean).slice(0, 40),
+		misused: arr(o.misused).map((x: any) => ({ term: str(x?.term), how: str(x?.how) })).filter((x) => x.term).slice(0, 20),
+		drift: arr(o.drift).map((x: any) => ({ term: str(x?.term), taughtAs: str(x?.taughtAs), nowAs: str(x?.nowAs) })).filter((x) => x.term && x.taughtAs && x.nowAs).slice(0, 10),
+		verdicts: arr(o.verdicts).map((x: any) => ({ id: str(x?.id), correct: x?.correct === true })).filter((x) => x.id).slice(0, 20),
+		misconceptions: arr(o.misconceptions).map((x: any) => ({ id: str(x?.id), term: str(x?.term), belief: str(x?.belief) })).filter((x) => x.belief).slice(0, 10),
 	};
 }
 
 /** The user message for the checker: held terms, planned-later terms, the learner\x27s words, the newest teaching. */
-export function vocabularyCheckInput(v: LessonVocabulary | undefined, learnerText: string, teaching: string): string {
-	const held = (v?.terms ?? []).map((t) => t.term);
+export function vocabularyCheckInput(v: LessonVocabulary | undefined, learnerText: string, teaching: string, answers: readonly { id: string; question: string; answer: string; thinking?: string; graded: "ungraded" | "missed" }[] = []): string {
+	const held = (v?.terms ?? []).map((t) => (t.gloss ? `${t.term} (${t.gloss})` : t.term));
 	const heldSet = heldTerms(v);
 	const later = Object.values(v?.planned ?? {}).flatMap((n) => n.introduces).filter((t) => !heldSet.has(normTerm(t)));
 	return [
@@ -179,6 +196,9 @@ export function vocabularyCheckInput(v: LessonVocabulary | undefined, learnerTex
 		"",
 		"WHAT THE LEARNER HAS WRITTEN (recent):",
 		learnerText.trim() || "(nothing)",
+		"",
+		"LEARNER ANSWERS IN THIS STRETCH (ungraded = judge from the teaching; missed = already wrong, read the reasoning):",
+		...(answers.length ? answers.map((a) => `- [${a.id}] (${a.graded}) Q: ${a.question} | answered: ${a.answer || "(nothing)"}${a.thinking ? ` | reasoning: ${a.thinking}` : ""}`) : ["(none)"]),
 		"",
 		"THE TUTOR\x27S NEWEST TEACHING:",
 		teaching.trim(),

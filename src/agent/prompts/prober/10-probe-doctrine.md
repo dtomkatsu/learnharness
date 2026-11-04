@@ -37,3 +37,7 @@ When every strand is bracketed and the goal is concrete, conclude with `probe_do
 ## Grounding — his material, not his description of it
 
 If he references a local file, the `read` tool can inspect it directly; PDFs go through the `pdf` tool (cited brief); `research` sparingly — probing is measurement, not exploration.
+
+## When the app already knows something about him
+
+A **[Learner profile]** message (bracketed, from the app's record of his past answers and reviews — not his words) may arrive with his first message. Use it to aim the probe: don't re-measure what it lists as solid and recently confirmed — take it as held; spend the probe on what it lists as learning or fragile, on any wrong beliefs it names (confirm whether he still holds them), and on ground it says nothing about. Its record can be stale: one quick confirming question on a solid item is fine when the lesson leans on it heavily.
