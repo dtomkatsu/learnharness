@@ -54,12 +54,15 @@ export interface StepSegment { nodeId: string; teaching: string[]; through: stri
 
 /**
  * The lesson cut into its steps: the teaching before a question tagged with a plan node belongs to that node (the
- * teaching precedes its check), and so does the message that asks it. Teaching after the last tagged question is
- * not assigned yet — that step is still being taught.
+ * teaching precedes its check), and so does the message that asks it — when the node is the step being taught, or a
+ * new one. A question tagged with an EARLIER step in the middle of another (a re-check) does not take the teaching
+ * around it: that stays with the step being taught (seen on the LLM lesson: matrices filed under "dot product").
+ * Teaching after the last tagged question is not assigned yet — that step is still being taught.
  */
 export function stepSegments(record: ChatRecord): Map<string, StepSegment> {
 	const out = new Map<string, StepSegment>();
 	let pending: string[] = [];
+	let current = null as string | null;
 	for (const m of record.messages as LhMessage[]) {
 		const x = m as unknown as { role?: string; id: string; content?: Block[] };
 		if (x.role !== "assistant" || !Array.isArray(x.content)) continue;
@@ -67,7 +70,10 @@ export function stepSegments(record: ChatRecord): Map<string, StepSegment> {
 		const tagged = x.content.filter((b) => b.type === "toolCall" && typeof b.arguments?.nodeId === "string");
 		if (text) pending.push(text);
 		if (!tagged.length) continue;
-		const node = tagged[tagged.length - 1]!.arguments!.nodeId as string;
+		const tag = tagged[tagged.length - 1]!.arguments!.nodeId as string;
+		// a re-check of an earlier step keeps the teaching with the step being taught
+		const node: string = tag === current || !out.has(tag) || !current ? tag : current;
+		current = node;
 		const seg = out.get(node) ?? { nodeId: node, teaching: [], through: x.id, calls: [] };
 		seg.teaching.push(...pending); seg.through = x.id; seg.calls.push(...tagged.map((b) => b.id!).filter(Boolean));
 		out.set(node, seg); pending = [];
@@ -75,13 +81,16 @@ export function stepSegments(record: ChatRecord): Map<string, StepSegment> {
 	return out;
 }
 
+const MIN_TEACHING = 400;
+
 /** A step is finished when it was confirmed, or the lesson has moved on to another step since. */
 function finishedSteps(record: ChatRecord, state: LearnerState, segs: Map<string, StepSegment>): string[] {
 	if (!record.tree) return [];
 	const prog = lessonProgress(state, record.id, record.tree);
 	const order = [...segs.keys()];
 	const last = order[order.length - 1];
-	return prog.nodes.filter((n) => segs.has(n.id) && (n.status === "checked" || n.status === "repaired" || n.id !== last)).map((n) => n.id);
+	// a step with almost no teaching of its own (known already, or only checked in passing) gets no note
+	return prog.nodes.filter((n) => segs.has(n.id) && segs.get(n.id)!.teaching.join(" ").length >= MIN_TEACHING && (n.status === "checked" || n.status === "repaired" || n.id !== last)).map((n) => n.id);
 }
 
 /** The learner's misses on a step: the question, his answer as he gave it, and what was right. */
@@ -109,6 +118,8 @@ Per step write:
 - "idea": the key idea in 2–4 plain sentences, as the lesson taught it — its own names, numbers and examples; nothing the lesson did not teach.
 - "example": the lesson's worked example cut to its essential lines (markdown; keep the numbers and the steps), or omit it when the step had none.
 - "mistakes": for each mistake (by its index "i"), "correction": one or two sentences to him ("you") — what was wrong in his answer and why the right one holds. Name the confusion, not just the answer.
+
+If the teaching given does not actually cover the step, give that step an empty idea ("") — never write about missing teaching.
 
 Use $…$ for maths. Reply with JSON only: {"steps":[{"nodeId":"…","idea":"…","example":"…"?,"mistakes":[{"i":0,"correction":"…"}]}]}`;
 

@@ -369,10 +369,11 @@ describe("lesson notes", async () => {
 		const c = chatStore.createChat("Dot products");
 		chatStore.saveMessages(c.id, [
 			{ id: "u1", role: "user", content: [{ type: "text", text: "teach me" }], timestamp: 1 },
-			asst("a1", [{ type: "text", text: "A vector is a list of numbers, like (9, 1)." }]),
+			asst("a1", [{ type: "text", text: "A vector is a list of numbers, like (9, 1). " + "Each number sits in a slot, and the slot says what the number measures. ".repeat(6) }]),
 			asst("a2", [{ type: "text", text: "Each slot means something." }, { type: "toolCall", id: "q1", name: "quiz", arguments: { nodeId: "v", type: "check", question: "What is (9,1)?", options: ["a number", "a list of two numbers"], correctAnswer: 2, explanation: "A vector is a list." } }]),
 			{ id: "r1", role: "toolResult", toolCallId: "q1", toolName: "quiz", content: [{ type: "text", text: "{}" }], details: { kind: "quiz", questionText: "What is (9,1)?", questionType: "check", answers: [{ label: "a number", index: 1 }], correct: false, confidence: 80 }, isError: false, timestamp: Date.now() - 3 * HOUR },
-			asst("a3", [{ type: "text", text: "Multiply matching slots and add: (1,2)·(3,4) = 3 + 8 = 11." }, { type: "toolCall", id: "q2", name: "quiz", arguments: { nodeId: "d", type: "check", question: "(1,0)·(0,1)?" } }]),
+			asst("a3", [{ type: "text", text: "Multiply matching slots and add: (1,2)·(3,4) = 3 + 8 = 11. " + "Matching slots pair up. ".repeat(20) }, { type: "toolCall", id: "q2", name: "quiz", arguments: { nodeId: "d", type: "check", question: "(1,0)·(0,1)?" } }]),
+			asst("a3b", [{ type: "text", text: "Angles come from dot products of unit vectors." }, { type: "toolCall", id: "q3", name: "quiz", arguments: { nodeId: "v", type: "check", question: "recheck: a vector is?" } }]),
 			asst("a4", [{ type: "text", text: "Next we will see angles." }]),
 		] as never);
 		chatStore.saveTree(c.id, { version: 1, nodes: [{ id: "v", title: "Vectors" }, { id: "d", title: "Dot product" }, { id: "x", title: "Angles" }], edges: [] } as never);
@@ -384,7 +385,9 @@ describe("lesson notes", async () => {
 		const segs = N.stepSegments(chatStore.getChat(lesson())!);
 		assert.deepEqual([...segs.keys()], ["v", "d"]);
 		assert.match(segs.get("v")!.teaching.join(" "), /list of numbers[\s\S]*Each slot/);
-		assert.doesNotMatch(segs.get("d")!.teaching.join(" "), /angles/, "teaching after the last question is not assigned yet");
+		assert.match(segs.get("d")!.teaching.join(" "), /Angles come from/, "a re-check of an earlier step leaves the teaching around it with the current step");
+		assert.doesNotMatch(segs.get("v")!.teaching.join(" "), /Angles/);
+		assert.doesNotMatch(segs.get("d")!.teaching.join(" "), /angles\./, "teaching after the last question is not assigned yet");
 	});
 	it("writes the notes of finished steps, with his mistakes corrected; the current step waits", async () => {
 		const id = lesson();
