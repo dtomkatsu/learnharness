@@ -190,6 +190,7 @@ describe("another app's deck", () => {
 		assert.equal(st2.items.get("term:kan")!.lapses, 1, "the review here lands on the deck's schedule");
 		assert.equal(M.glossary(st).length, 0, "the glossary is the lessons' unless asked for a deck");
 		assert.equal(M.glossary(st, undefined, "bahasa").length, 2);
+		assert.deepEqual(M.digest(st).slipping, [], "a deck's backlog is not the lessons' week");
 	});
 	it("a deck word a lesson taught is in both; a language lesson's profile names what the deck holds", () => {
 		const st = M.deriveLearner([taught("kan", T0 + DAY, { chatId: "c2" })], { ...G0, lessonTitles: new Map([["c2", "Bahasa indonesian"]]), external: [deck({ schedule: { stability: 60, difficulty: 4, due: T0 + 60 * DAY, lastReview: T0 + 20 * DAY, reps: 6 } }), deck({ term: "dong", schedule: null })] as never }, T0 + 21 * DAY);

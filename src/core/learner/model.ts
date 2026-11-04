@@ -635,6 +635,8 @@ export function digest(state: LearnerState, days = 7): Digest {
 	const counts: Record<ItemStatus, number> = { new: 0, learning: 0, solid: 0, fragile: 0, misconceived: 0, leech: 0, suspended: 0 };
 	const newlySolid: string[] = [], slipping: string[] = [], fixed: string[] = [], open: { label: string; belief: string }[] = [];
 	for (const it of state.items.values()) {
+		// the lessons' week: a deck's own backlog (words only another app taught) has its own row
+		if (!inDeck(it) || it.retired) continue;
 		if (it.reviewable || it.ratings.length) counts[it.status]++;
 		if (it.status === "solid" && it.solidSince && it.solidSince >= since) newlySolid.push(it.label);
 		const r = effectiveRetrievability(it);
