@@ -60,24 +60,34 @@ export interface StepSegment { nodeId: string; teaching: string[]; through: stri
  * Teaching after the last tagged question is not assigned yet — that step is still being taught.
  */
 export function stepSegments(record: ChatRecord): Map<string, StepSegment> {
-	const out = new Map<string, StepSegment>();
+	// the teaching: prose, what send_to_user delivers (most of a lesson), and a question's explanation
+	const said = (c: Block[]) => c.map((b) => (b.type === "text" ? b.text ?? "" : b.type === "toolCall" && b.name === "send_to_user" && typeof b.arguments?.message === "string" ? (b.arguments.message as string) : b.type === "toolCall" && typeof b.arguments?.explanation === "string" ? "(After the question:) " + (b.arguments.explanation as string) : "")).filter((t) => t.trim()).join("\n").trim();
+	type Ev = { node: string; id: string; texts: string[]; calls: string[] };
+	const evs: Ev[] = [];
 	let pending: string[] = [];
-	let current = null as string | null;
 	for (const m of record.messages as LhMessage[]) {
 		const x = m as unknown as { role?: string; id: string; content?: Block[] };
 		if (x.role !== "assistant" || !Array.isArray(x.content)) continue;
-		const text = x.content.filter((b) => b.type === "text" && b.text).map((b) => b.text!).join("\n").trim();
-		const tagged = x.content.filter((b) => b.type === "toolCall" && typeof b.arguments?.nodeId === "string");
+		const text = said(x.content);
 		if (text) pending.push(text);
+		const tagged = x.content.filter((b) => b.type === "toolCall" && typeof b.arguments?.nodeId === "string");
 		if (!tagged.length) continue;
-		const tag = tagged[tagged.length - 1]!.arguments!.nodeId as string;
-		// a re-check of an earlier step keeps the teaching with the step being taught
-		const node: string = tag === current || !out.has(tag) || !current ? tag : current;
-		current = node;
-		const seg = out.get(node) ?? { nodeId: node, teaching: [], through: x.id, calls: [] };
-		seg.teaching.push(...pending); seg.through = x.id; seg.calls.push(...tagged.map((b) => b.id!).filter(Boolean));
-		out.set(node, seg); pending = [];
+		evs.push({ node: tagged[tagged.length - 1]!.arguments!.nodeId as string, id: x.id, texts: pending, calls: tagged.map((b) => b.id!).filter(Boolean) });
+		pending = [];
 	}
+	// who owns each stretch: the tagged step — unless it is ONE question on an earlier step in the middle of another
+	// (a passing re-check): then the step being taught keeps it. Two or more in a row on it is going back to it.
+	const out = new Map<string, StepSegment>();
+	let owner: string | null = null;
+	evs.forEach((e, k) => {
+		const prev = evs[k - 1]?.node, next = evs[k + 1]?.node;
+		const recheck = owner && out.has(e.node) && e.node !== prev && e.node !== next && e.node !== owner;
+		const node: string = recheck ? owner! : e.node;
+		owner = node;
+		const seg = out.get(node) ?? { nodeId: node, teaching: [], through: e.id, calls: [] };
+		seg.teaching.push(...e.texts); seg.through = e.id; seg.calls.push(...e.calls);
+		out.set(node, seg);
+	});
 	return out;
 }
 
