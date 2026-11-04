@@ -355,6 +355,9 @@ describe("memory: relearning, held later, use it, confident misses, a backlog", 
 		assert.deepEqual([c.due, c.backlog], [40, 60]);
 		const later = M.deriveLearner(Array.from({ length: 10 }, (_, i) => review("term:w" + i, 3, T0 + 30 * DAY + i)) as never, { ...G0, external: ext as never }, T0 + 30 * DAY + 100);
 		assert.equal(M.dueCount(later, 10, "bahasa", 40).due, 30, "the day's reviews count against the cap");
+		const half = Array.from({ length: 30 }, (_, i) => ({ term: "h" + i, gloss: "g", deck: "bahasa", lang: "id", schedule: { stability: 0.4, difficulty: 7, due: T0, lastReview: T0 - DAY, reps: 0 } }));
+		const both = M.dueCount(M.deriveLearner([], { ...G0, external: [...ext, ...half] as never }, T0 + 30 * DAY), 10, "bahasa", 40);
+		assert.deepEqual([both.learning + both.due, both.backlog], [40, 90], "half-learned overdue cards count against the cap too");
 	});
 });
 

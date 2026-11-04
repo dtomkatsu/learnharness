@@ -547,12 +547,16 @@ export function reviewQueue(state: LearnerState, opts: QueueOptions = {}): Queue
 	const today = studyDay(now);
 	const out: QueueEntry[] = [];
 	const pool = [...state.items.values()].filter((it) => it.reviewable && it.status !== "leech" && it.status !== "suspended" && (opts.only ? opts.only.has(it.id) : inDeck(it, opts.deck)));
-	const learning = pool.filter((it) => (it.schedule.state === 1 || it.schedule.state === 3) && it.schedule.due <= now).sort((a, b) => a.schedule.due - b.schedule.due);
+	const allLearning = pool.filter((it) => (it.schedule.state === 1 || it.schedule.state === 3) && it.schedule.due <= now).sort((a, b) => a.schedule.due - b.schedule.due);
 	const introducedToday = new Set(state.events.filter((e) => e.kind === "review" && studyDay(Date.parse(e.at)) === today).map((e) => (e as { itemId: string }).itemId));
 	const allDue = pool.filter((it) => it.schedule.state === 2 && (isDue(it.schedule, now) || (it.produce && isDue(it.produce, now))))
 		.sort((a, b) => (effectiveRetrievability(a) ?? 1) - (effectiveRetrievability(b) ?? 1));
 	const doneToday = opts.dueCap != null ? pool.filter((it) => introducedToday.has(it.id)).length : 0;
-	const due = opts.dueCap != null && !opts.only ? allDue.slice(0, Math.max(0, opts.dueCap - doneToday)) : allDue;
+	// the cap covers both: half-learned cards long overdue (a deck left for months) are a backlog too
+	const capped = opts.dueCap != null && !opts.only;
+	const room = capped ? Math.max(0, opts.dueCap! - doneToday) : Infinity;
+	const learning = capped ? allLearning.slice(0, room) : allLearning;
+	const due = capped ? allDue.slice(0, Math.max(0, room - learning.length)) : allDue;
 	const freshToday = [...state.items.values()].filter((it) => it.ratings[0] && studyDay(Date.parse(it.ratings[0].at)) === today && introducedToday.has(it.id)).length;
 	const fresh = pool.filter((it) => it.schedule.state === 0)
 		.sort((a, b) => b.priority - a.priority || (b.misconceptions.length - a.misconceptions.length) || (a.firstSeen < b.firstSeen ? -1 : 1))
@@ -570,7 +574,7 @@ export function dueCount(state: LearnerState, newPerDay = 20, deck?: string, due
 	if (dueCap == null) return out;
 	// the whole backlog, for "30 today (218 due)"
 	const all = reviewQueue(state, { newPerDay: 0, limit: 100000, deck });
-	return { ...out, backlog: all.filter((e) => e.reason === "due").length };
+	return { ...out, backlog: all.filter((e) => e.reason === "due" || e.reason === "learning").length };
 }
 
 /** A deck's daily limits: its backlog spread over days, fewer new words while one is waiting. */
