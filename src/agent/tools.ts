@@ -151,7 +151,9 @@ function quizDescription(delta: { name: "quiz" | "probe"; nodeId: boolean; types
 		"can show an explanation. Options-only: single-select or multi-select, plus an automatic 'I don't know' " +
 		"choice so the learner can signal a genuine gap instead of guessing. An always-present optional thinking " +
 		"field lets the learner attach his reasoning to ANY answer; it reaches you only when non-empty. " +
-		"No free-text answers — for non-graded questions use ask_user_question instead. " +
+		"No free-text answers here — when a GRADED answer should come in his own words (a why, a meaning, something to work out), use " +
+		(delta.name === "quiz" ? "explain" : "recall") +
+		" if it is armed; for non-graded questions use ask_user_question. " +
 		(delta.types
 			? "Every call declares `type` — the question's role in the teaching cycle; the field's own description says when each kind fires. "
 			: "") +

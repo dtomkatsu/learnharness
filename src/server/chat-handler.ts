@@ -31,6 +31,7 @@ import { runPiTurn } from "./pi/ui-stream.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
 import { effectiveSettings, stores } from "./stores.ts";
+import { teachMechanics } from "../agent/tools.ts";
 import { searchAvailable, searchProvider } from "./search.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
@@ -391,7 +392,7 @@ export async function handleChatInput(
 	// earlier steps, term drift — see server/learner.ts learnerNotes.
 	let learnerPart: LearnerNotes | null = null;
 	if (learnerTurn) {
-		try { learnerPart = learnerNotes(learnerState({ chatStore: stores.chatStore, graphStore: stores.graphStore }), record, noteable); }
+		try { learnerPart = learnerNotes(learnerState({ chatStore: stores.chatStore, graphStore: stores.graphStore }), record, noteable, { mixed: teachMechanics(effective.agent.tools) === "mixed" }); }
 		catch (err) { console.error(`[chat ${chatId}] learner notes failed:`, err); }
 	}
 	const notesText = [noteable ? lessonNotesText(pendingFlags, pendingSide) : null, ...(learnerPart?.sections ?? [])].filter(Boolean).join("\n\n") || null;

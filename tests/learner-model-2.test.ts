@@ -295,3 +295,14 @@ describe("the question mix", () => {
 	});
 });
 
+describe("the question-mix nudge", () => {
+	it("after three option questions in a row the tutor is told to ask the next in his own words; an explain among them clears it", () => {
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		const call = (id: string, name: string) => ({ id: "m" + id, role: "assistant", content: [{ type: "toolCall", id, name, arguments: { question: "q" } }], stopReason: "toolUse", api: "x", provider: "x", model: "x", usage, timestamp: 1 });
+		const rec = (names: string[]) => ({ id: "c", title: "t", messages: names.map((n, i) => call("q" + i, n)) }) as never;
+		assert.equal(L.questionMixNote(rec(["quiz", "quiz"])), null);
+		assert.match(L.questionMixNote(rec(["explain", "quiz", "quiz", "quiz"]))!, /^\[Question mix\] The last 3 questions[\s\S]*1 of 4 so far[\s\S]*`explain`/);
+		assert.equal(L.questionMixNote(rec(["quiz", "quiz", "explain"])), null);
+	});
+});
+

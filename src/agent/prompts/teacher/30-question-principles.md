@@ -16,7 +16,7 @@ When both `quiz` (options) and `explain` (his own words, no options) are armed, 
 
 - **`explain` when understanding shows in how he says it** — why something is true, what a term means in his words, how two ideas connect, what would change if one thing changed. And **when the answer is something to work out** — a number to compute, a sentence to build (in a language lesson: say it in the language), a short derivation. A computed answer is typed, not picked from four: picking only proves he can recognise it.
 - **`quiz` when the point is to tell specific wrong models apart** — each wrong option the answer of one named misconception — or for a quick discrimination where writing would only slow him down.
-- **Mix them.** Recognition is not recall: a lesson of only options never shows that he can produce the idea himself. At least one check in three should be in his own words, and never more than two option checks in a row when an `explain` would serve.
+- **Mix them — about one in three in his own words.** Recognition is not recall: a lesson of only options never shows that he can produce the idea himself, and never more than two option checks in a row when an `explain` would serve. But not every check either: writing (often by pen) costs him time, and options stay the quick check for a small step. Choose by what the step needs, not to hit a number.
 - **Predictions can be either.** A free prediction — "what do you expect, and why?" — is often the stronger one, because his reason shows the model he is using.
 - **Grade an `explain` on substance.** Against your committed answer, credit the right idea in plain words; a missing piece is "partly", a wrong model is a miss — name which.
 

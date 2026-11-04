@@ -321,7 +321,26 @@ export interface LearnerNotes { sections: string[]; mark: { profiled?: boolean; 
  * lesson, earlier plan nodes never checked (once per node reached), and term
  * drift. `mark` is what the caller records on the ledger once the notes are on disk.
  */
-export function learnerNotes(state: LearnerState, record: ChatRecord, teaching: boolean): LearnerNotes {
+/** The question calls of the lesson so far (teach phase: quiz and explain), oldest first. */
+export function questionKinds(record: ChatRecord): ("quiz" | "explain")[] {
+	const out: ("quiz" | "explain")[] = [];
+	for (const m of record.messages as LhMessage[]) {
+		const x = m as unknown as { role?: string; content?: Block[] };
+		if (x.role !== "assistant" || !Array.isArray(x.content)) continue;
+		for (const b of x.content) if (b.type === "toolCall" && (b.name === "quiz" || b.name === "explain")) out.push(b.name);
+	}
+	return out;
+}
+
+/** The nudge when a lesson keeps asking with options (only when both tools are armed): a history of options-only is a strong pattern to copy. */
+export function questionMixNote(record: ChatRecord): string | null {
+	const ks = questionKinds(record), tail = ks.slice(-3);
+	if (tail.length < 3 || tail.some((k) => k === "explain")) return null;
+	const own = ks.filter((k) => k === "explain").length;
+	return `[Question mix] The last ${tail.length} questions in this lesson all had options (${own} of ${ks.length} so far were in his own words). Make the next check an \`explain\`: a why, a meaning in his words, or something to work out and type (a number, a vector, a sentence) — not chosen from a list. Options only to tell named wrong models apart.`;
+}
+
+export function learnerNotes(state: LearnerState, record: ChatRecord, teaching: boolean, opts: { mixed?: boolean } = {}): LearnerNotes {
 	const v = record.vocabulary, sections: string[] = [], mark: LearnerNotes["mark"] = {};
 	const topic = `${record.title} ${firstUserText(record)}`;
 	if (!v?.profiled) {
@@ -334,6 +353,7 @@ export function learnerNotes(state: LearnerState, record: ChatRecord, teaching: 
 	}
 	if (!teaching) return { sections, mark };
 	const turn = (v?.noteTurns ?? 0) + 1; mark.dueTurn = turn;
+	if (opts.mixed) { const mix = questionMixNote(record); if (mix) sections.push(mix); }
 	if (turn % 4 === 0) {
 		const due = relatedItems(state, topic, record.id).filter((it) => it.schedule.state === 2 && isDue(it.schedule, state.now) && it.status !== "leech" && it.status !== "suspended").slice(0, 3);
 		if (due.length) sections.push(["[Due for review, and related to this lesson]", ...due.map((it) => `- ${it.label}`), "Where one fits naturally, use it as a quick retrieval check — ask before re-explaining. Never derail the lesson for it."].join("\n"));
