@@ -77,3 +77,14 @@ Slices 1–3 make it usable; 4 and 5 make it good. Each is a day-sized piece.
 - **Testing out**: may a lesson be skipped when a quick check shows he already holds it?
 - **How much say**: approve the roadmap once, or review each unit before it starts?
 - **Where**: the tablet only, or LearnHarness's own web interface too (more work: its UI is React, separate from Paper's page)?
+
+## As built (2026-11-04, e89279d → 85b68c8)
+
+Defaults chosen: 20–30 minute lessons, a lesson a day, skipping allowed, the roadmap approved once, the tablet and the web app.
+
+- `src/core/courses.ts`, `src/server/courses.ts`, `/api/courses` (list, POST {goal} or {fromChat}), `/api/courses/[id]` (approve, redraw, start, skip, unskip), `/api/courses/[id]/notes` (Markdown). Records in `data/courses/`. `ChatRecord.course = { id, lessonId }`.
+- A course lesson's chat starts with a model-only `[Course context]`: objectives, steps to seed `plan_init`, earlier and next lessons, skipped lessons to check briefly, weak items from earlier lessons, what part a converted lesson already confirmed, and the checkpoint instructions for checkpoint lessons. Done = all its plan steps confirmed (held = also a day later); finished today → the next suggested for tomorrow.
+- A lesson from before courses: the planner groups its plan nodes into the first lessons (`adopted`), plans the rest; a converted lesson with nothing confirmed is not "in progress"; continuing one starts a chat of its own (the old chat stays reachable as "the earlier session").
+- Tablet (Paper `web/learn.html`): shelf row, new course (goal or lesson), roadmap page, lesson-done box, "Lesson n of N" in a lesson. Web app: `/course/new`, `/course/[id]`, sidebar Courses (`components/course-view.tsx`). Paper's daily reminder names a lesson ready today.
+- Real data: both lessons converted to drafts — "How LLMs Work: From Vectors to Transformers" (16 lessons, 4 checkpoints, 2 done) and "Casual Indonesian: reading and replying to friends" (14 lessons, 3 checkpoints). Waiting for approval.
+- Not built: re-planning triggered by a checkpoint by itself (redraw is on request); a "Today" session combining reviews and the next lesson.
