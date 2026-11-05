@@ -43,7 +43,10 @@ export interface Course {
 	units: CourseUnit[];
 	createdAt: string;
 	updatedAt: string;
-	history: { at: string; why: string }[];
+	/** auto: the roadmap changed itself after a finished lesson; changes: lessons added and dropped by that redraw. */
+	history: { at: string; why: string; auto?: boolean; added?: string[]; dropped?: string[] }[];
+	/** Lessons after which the automatic adjustment has run (once each). */
+	adjustedAfter?: string[];
 }
 
 export const lessonsOf = (c: Course): (CourseLesson & { unit: CourseUnit; n: number })[] =>

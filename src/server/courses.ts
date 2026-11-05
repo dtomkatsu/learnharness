@@ -109,14 +109,20 @@ export async function createCourse(deps: LearnerDeps, goal: string, engine: PiEn
 }
 
 /** Redraw from his request: what is done, in progress or skipped stays; the rest is planned again. */
-export async function redrawCourse(deps: LearnerDeps, c: Course, request: string, engine: PiEngine): Promise<Course> {
+export async function redrawCourse(deps: LearnerDeps, c: Course, request: string, engine: PiEngine, opts: { auto?: boolean } = {}): Promise<Course> {
+	const before = new Set(lessonsOf(c).map((l) => l.title));
 	const state = learnerState(deps);
 	const states = lessonStates(c, (l) => lessonProgressOf(deps, state, l));
 	const fixed = lessonsOf(c).filter((l) => ["done", "held", "in-progress", "skipped"].includes(states.get(l.id)!)).map(({ unit: _u, n: _n, ...l }) => l as CourseLesson);
 	const current = c.units.map((u) => ({ title: u.title, lessons: u.lessons.map((l) => ({ id: l.id, title: l.title, objectives: l.objectives, steps: l.steps, introduces: l.introduces, needs: l.needs, kind: l.kind, state: states.get(l.id), ...(fixed.some((f) => f.id === l.id) ? { FIXED: true } : {}) })) }));
-	const p = await plan(state, engine, `GOAL: ${c.goal}\n\nWHAT HE ALREADY HOLDS (the app's record):\n${holdsText(state, c.goal)}\n\nTHE CURRENT COURSE:\n${JSON.stringify(current)}\n\nHIS REQUEST: ${request}`, fixed);
-	c.units = p.units; if (p.title) c.title = p.title;
-	c.history.push({ at: new Date().toISOString(), why: request.slice(0, 300) });
+	const ask = opts.auto
+		? `AN AUTOMATIC ADJUSTMENT after a finished lesson — not his request. Keep every remaining lesson as it is unless a signal below calls for a change. You may: insert a short repair lesson (kind "teach", title starting "Repair: ") right after the FIXED lessons for what he is weak on; drop a lesson whose content he already holds, or fold what little is new in it into a neighbour; move a checkpoint. Change nothing else.\nSIGNALS:\n${request}`
+		: `HIS REQUEST: ${request}`;
+	const p = await plan(state, engine, `GOAL: ${c.goal}\n\nWHAT HE ALREADY HOLDS (the app's record):\n${holdsText(state, c.goal)}\n\nTHE CURRENT COURSE:\n${JSON.stringify(current)}\n\n${ask}`, fixed);
+	c.units = p.units; if (p.title && !opts.auto) c.title = p.title;
+	const after = new Set(lessonsOf(c).map((l) => l.title));
+	const added = [...after].filter((t) => !before.has(t)), dropped = [...before].filter((t) => !after.has(t));
+	c.history.push({ at: new Date().toISOString(), why: request.slice(0, opts.auto ? 600 : 300), ...(opts.auto ? { auto: true } : {}), ...(added.length ? { added } : {}), ...(dropped.length ? { dropped } : {}) });
 	writeCourse(c);
 	return c;
 }
@@ -259,4 +265,54 @@ function adoptedLine(deps: LearnerDeps, state: LearnerState, l: CourseLesson): s
 	const open = nodes.filter((n) => n.status !== "checked" && n.status !== "repaired").map((n) => n.title);
 	if (!ok.length) return "";
 	return `Part of this lesson was taught before, in an earlier long session: confirmed there — ${ok.join("; ")}${open.length ? `; not yet confirmed — ${open.join("; ")}` : ""}. Open with a quick retrieval check of the confirmed part, then teach what is not yet confirmed.`;
+}
+
+// ─── the roadmap adjusting itself ───────────────────────────────────────────
+
+/**
+ * What a finished lesson says about the rest of the course: items from the course he is weak on (fragile,
+ * misunderstood, never sticking, or fading), what he missed in that lesson (any miss, for a checkpoint), and lessons
+ * ahead whose new terms he already holds. Empty when nothing calls for a change.
+ */
+export function replanSignals(deps: LearnerDeps, c: Course, lessonId: string, state: LearnerState = learnerState(deps)): string[] {
+	const all = lessonsOf(c), i = all.findIndex((l) => l.id === lessonId), l = all[i];
+	if (!l) return [];
+	const chats = new Set(all.slice(0, i + 1).flatMap((x) => [x.chatId, x.adopted?.chatId].filter((y): y is string => !!y)));
+	const out: string[] = [];
+	const weak = [...state.items.values()].filter((it) => !it.retired && it.lessons.some((ch) => chats.has(ch)) && (it.status === "fragile" || it.status === "misconceived" || it.status === "leech"));
+	if (weak.length) out.push("Weak from the lessons so far: " + weak.slice(0, 10).map((it) => it.label + (it.misconceptions.some((m) => !m.resolvedAt) ? ` (believes: "${it.misconceptions.filter((m) => !m.resolvedAt).slice(-1)[0]!.belief}")` : ` (${it.status})`)).join("; ") + ".");
+	const chatId = l.chatId;
+	const misses = chatId ? (state.answersByChat.get(chatId) ?? []).filter((a) => (a.outcome === "miss" || a.outcome === "dontknow") && a.questionType !== "predict") : [];
+	if (misses.length && (l.kind === "checkpoint" || misses.length >= 2)) out.push(`Missed in "${l.title}"${l.kind === "checkpoint" ? " (a checkpoint)" : ""}: ` + misses.slice(0, 8).map((a) => `"${a.question.slice(0, 120)}"`).join("; ") + ".");
+	const held = (t: string) => { const it = [...state.items.values()].find((x) => x.label.toLowerCase() === t.toLowerCase() || x.aliases.some((a) => a.toLowerCase() === t.toLowerCase())); return !!it && (it.status === "solid" || it.known === true); };
+	const ahead = all.slice(i + 1).filter((x) => x.kind === "teach" && !x.chatId && !x.skipped && x.introduces.length >= 2 && x.introduces.every(held));
+	if (ahead.length) out.push("Already held — every new term of: " + ahead.map((x) => `"${x.title}" (${x.introduces.join(", ")})`).join("; ") + ".");
+	return out;
+}
+
+const adjusting = new Set<string>();
+
+/** After a lesson is done: once, and only when its signals call for it, the rest of the roadmap is adjusted. */
+export async function autoAdjust(deps: LearnerDeps, courseId: string, lessonId: string, engine: PiEngine): Promise<Course | null> {
+	if (adjusting.has(courseId)) return null;
+	adjusting.add(courseId);
+	try {
+		const c = readCourse(courseId);
+		if (!c || c.status !== "active" || (c.adjustedAfter ?? []).includes(lessonId)) return null;
+		const v = courseView(deps, c);   // stamps done
+		const me = v.units.flatMap((u) => u.lessons).find((l) => l.id === lessonId);
+		if (!me || (me.state !== "done" && me.state !== "held")) return null;
+		const fresh = readCourse(courseId)!;
+		fresh.adjustedAfter = [...(fresh.adjustedAfter ?? []), lessonId];
+		const signals = replanSignals(deps, fresh, lessonId);
+		if (!signals.length) { writeCourse(fresh); return null; }
+		const done = await redrawCourse(deps, fresh, `After lesson ${me.n} ("${me.title}"):\n- ` + signals.join("\n- "), engine, { auto: true });
+		return done;
+	} finally { adjusting.delete(courseId); }
+}
+
+/** From the after-turn check of a course lesson: in the background. */
+export function autoAdjustSoon(deps: LearnerDeps, record: ChatRecord, engine: PiEngine | undefined): void {
+	if (process.env.NODE_ENV === "test" || !engine || !record.course) return;
+	void autoAdjust(deps, record.course.id, record.course.lessonId, engine).catch((err) => console.error(`[course ${record.course!.id}] automatic adjustment failed:`, err));
 }

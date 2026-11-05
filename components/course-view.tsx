@@ -21,7 +21,7 @@ interface LessonV {
 interface CourseV {
 	id: string; title: string; goal: string; level: string; status: "draft" | "active"; done: number; total: number;
 	next: { id: string; n: number; title: string; minutes: number; state: LessonState; chatId: string | null } | null;
-	nextSuggestedAt: string | null; history: { at: string; why: string }[];
+	nextSuggestedAt: string | null; history: { at: string; why: string; auto?: boolean; added?: string[]; dropped?: string[] }[];
 	units: { id: string; title: string; why: string; lessons: LessonV[] }[];
 }
 interface CourseSummary { id: string; title: string; status: "draft" | "active"; done: number; total: number; next: CourseV["next"] }
@@ -128,6 +128,11 @@ export function CourseView({ courseId }: { courseId: string }) {
 			<h1 className="text-2xl font-semibold">{v.title}</h1>
 			<p className="mt-1 text-sm text-muted-foreground">{v.goal}{v.level ? ` · starting from: ${v.level}` : ""}</p>
 			<p className="mt-3 text-sm">{v.done} of {v.total} lessons done</p>
+			{v.history.filter((x) => x.auto).slice(-2).reverse().map((x) => (
+				<p key={x.at} className="mt-1 text-xs text-muted-foreground" data-testid="course-auto-change">
+					The roadmap adjusted itself {(x.why.split("\n")[0] ?? "").replace(/:$/, "").toLowerCase()}: {[x.added?.length ? "added " + x.added.map((t) => `“${t}”`).join(", ") : "", x.dropped?.length ? "dropped " + x.dropped.map((t) => `“${t}”`).join(", ") : ""].filter(Boolean).join("; ") || "reordered"}.
+				</p>
+			))}
 			{draft && (
 				<div className="mt-5 rounded-lg border p-4">
 					<p className="text-sm"><b>A draft roadmap.</b> Approve it, or say what to change and it is redrawn.</p>

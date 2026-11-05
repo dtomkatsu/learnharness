@@ -689,6 +689,7 @@ export async function handleChatInput(
 						chatStore: stores.chatStore,
 						graphStore: stores.graphStore,
 						engine: () => resolveEngine("auditor"),
+						planner: () => resolveEngine("teacher"),
 						canStart: (provider) => providerKeyPresent(provider) && connectionBackgroundAllowed(provider),
 					}, record.kind !== "practice" && teaching);
 				}

@@ -25,6 +25,7 @@ import { termItem, type LearnerEvent } from "../core/learner/model.ts";
 import { appendEvidence, readEvidence } from "../store/learner.ts";
 import { logRecordEvidence, loggedCallIds, missedWithThinking, tidySoon, unjudgedAnswers } from "./learner.ts";
 import { notesSoon } from "./notes.ts";
+import { autoAdjustSoon } from "./courses.ts";
 
 export interface VocabularyCheckDeps {
 	chatStore: ChatStore;
@@ -33,6 +34,8 @@ export interface VocabularyCheckDeps {
 	/** Whether a background call may go to this provider now (key present, background use allowed). */
 	canStart: (provider: string) => boolean;
 	graphStore?: Pick<GraphStore, "readNodes" | "readChains">;
+	/** The strong engine, for a course's automatic adjustment after a finished lesson. */
+	planner?: () => PiEngine | undefined;
 }
 
 const QUESTIONS = new Set<string>(QUESTION_TOOLS);
@@ -84,6 +87,9 @@ export async function runAfterTurn(chatId: string, deps: VocabularyCheckDeps, te
 	const ok = await runVocabularyCheck(chatId, deps);
 	// the notes of a step just finished (after the check: it may have added terms and meanings)
 	if (deps.graphStore) notesSoon({ chatStore: deps.chatStore, graphStore: deps.graphStore }, chatId, deps.engine());
+	// a course lesson just finished: the rest of the roadmap adjusts itself, when what happened calls for it
+	const planner = deps.planner?.();
+	if (deps.graphStore && record.course && planner && deps.canStart(planner.model.provider)) autoAdjustSoon({ chatStore: deps.chatStore, graphStore: deps.graphStore }, deps.chatStore.getChat(chatId) ?? record, planner);
 	return ok;
 }
 

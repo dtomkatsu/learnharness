@@ -133,3 +133,48 @@ describe("planning, running and changing a course", () => {
 		assert.match(S.lessonContext(deps, S.readCourse(c.id)!, ls[0]!.id), /confirmed there — Vectors; Dot/);
 	});
 });
+
+describe("the roadmap adjusting itself", () => {
+	async function finished(misses: number, kind = "teach") {
+		const plan = { ...PLAN, units: [{ title: "U", why: "", lessons: [lesson("Vectors", { kind, introduces: ["vector"] }), lesson("Dot product", { introduces: ["dot product", "similarity"], needs: ["vector"] }), lesson("Attention", { introduces: ["attention"] })] }] };
+		const { engine } = engineOf(plan);
+		const c = await S.createCourse(deps, "goal", engine);
+		c.status = "active"; S.writeCourse(c);
+		const r = S.startLesson(deps, S.readCourse(c.id)!, "vectors");
+		chatStore.saveTree(r.chatId, { version: 1, nodes: [{ id: "x", title: "X" }], edges: [] } as never);
+		const ev: unknown[] = [{ kind: "answer", chatId: r.chatId, messageId: "m", toolCallId: "ok" + c.id, tool: "quiz", question: "fine", outcome: "correct", planNode: "x", items: [] }];
+		for (let k = 0; k < misses; k++) ev.unshift({ kind: "answer", chatId: r.chatId, messageId: "m", toolCallId: `m${k}${c.id}`, tool: "quiz", question: "what is a slot " + k, outcome: "miss", planNode: "x", items: [] });
+		store.appendEvidence(ev as never);
+		return c.id;
+	}
+	it("a finished lesson with nothing to act on changes nothing, and is not looked at twice", async () => {
+		const id = await finished(0);
+		const { engine, seen } = engineOf({ units: [] });
+		assert.equal(await S.autoAdjust(deps, id, "vectors", engine), null);
+		assert.equal(seen.length, 0, "no planner call");
+		assert.deepEqual(S.readCourse(id)!.adjustedAfter, ["vectors"]);
+	});
+	it("misses in a finished lesson, and a lesson ahead already held, make it redraw the rest — once, recorded as automatic", async () => {
+		const id = await finished(2);
+		store.appendEvidence([{ kind: "taught", itemId: "term:dot product", term: "dot product", gloss: "g", chatId: "z" }, { kind: "known", itemId: "term:dot product", on: true }, { kind: "taught", itemId: "term:similarity", term: "similarity", gloss: "g", chatId: "z" }, { kind: "known", itemId: "term:similarity", on: true }] as never);
+		const signals = S.replanSignals(deps, S.readCourse(id)!, "vectors");
+		assert.match(signals.join(" "), /Missed in "Vectors": "what is a slot 1"; "what is a slot 0"[\s\S]*Already held — every new term of: "Dot product"/);
+		const { engine, seen } = engineOf({ units: [{ title: "U", why: "", lessons: [{ ...lesson("Vectors"), id: "vectors" }, lesson("Repair: slots"), lesson("Attention", { introduces: ["attention"] })] }] });
+		const c = (await S.autoAdjust(deps, id, "vectors", engine))!;
+		assert.match(seen[0]!, /AN AUTOMATIC ADJUSTMENT after a finished lesson[\s\S]*SIGNALS:[\s\S]*After lesson 1/);
+		assert.deepEqual(C.lessonsOf(c).map((l) => l.title), ["Vectors", "Repair: slots", "Attention"]);
+		const h = c.history.at(-1)!;
+		assert.deepEqual([h.auto, h.added, h.dropped], [true, ["Repair: slots"], ["Dot product"]]);
+		const { engine: e2, seen: s2 } = engineOf({ units: [] });
+		assert.equal(await S.autoAdjust(deps, id, "vectors", e2), null);
+		assert.equal(s2.length, 0, "once per lesson");
+	});
+	it("any miss in a checkpoint counts; a lesson not finished is left alone", async () => {
+		const id = await finished(1, "checkpoint");
+		assert.match(S.replanSignals(deps, S.readCourse(id)!, "vectors").join(" "), /\(a checkpoint\)/);
+		const { engine, seen } = engineOf({ units: [] });
+		assert.equal(await S.autoAdjust(deps, id, "dot-product", engine), null);
+		assert.equal(seen.length, 0);
+	});
+});
+
