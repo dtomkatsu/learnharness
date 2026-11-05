@@ -124,8 +124,12 @@ describe("planning, running and changing a course", () => {
 		const ls = C.lessonsOf(c);
 		assert.deepEqual(ls.map((l) => l.adopted?.nodes ?? null), [["v", "d"], ["s"], null]);
 		const v = S.courseView(deps, c);
-		assert.deepEqual(v.units[0]!.lessons.map((l) => l.state), ["done", "in-progress", "locked"]);
-		assert.equal(v.next!.chatId, old.id, "the unfinished adopted lesson goes on in its chat");
-		assert.deepEqual(S.startLesson(deps, c, ls[1]!.id), { chatId: old.id, created: false });
+		assert.deepEqual(v.units[0]!.lessons.map((l) => l.state), ["done", "next", "locked"], "nothing of Softmax was confirmed: not begun");
+		const r = S.startLesson(deps, c, ls[1]!.id);
+		assert.equal(r.created, true, "a converted lesson goes on in a chat of its own");
+		assert.notEqual(r.chatId, old.id);
+		const ctx = (chatStore.getChat(r.chatId)!.messages[0] as any).content as string;
+		assert.doesNotMatch(ctx, /Part of this lesson was taught before/, "nothing of it was confirmed");
+		assert.match(S.lessonContext(deps, S.readCourse(c.id)!, ls[0]!.id), /confirmed there — Vectors; Dot/);
 	});
 });

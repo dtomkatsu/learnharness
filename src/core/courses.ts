@@ -70,7 +70,8 @@ export function lessonStates(c: Course, progress: (l: CourseLesson) => { steps: 
 		const p = progress(l);
 		if (p && p.steps > 0 && p.confirmed >= p.steps) { out.set(l.id, p.held >= p.steps ? "held" : "done"); continue; }
 		if (l.doneAt && (!p || p.steps === 0)) { out.set(l.id, "done"); continue; }
-		if (l.chatId || l.adopted) { out.set(l.id, "in-progress"); if (!nextGiven) nextGiven = true; continue; }
+		// a lesson from before the course counts as begun only when something in it was confirmed
+		if (l.chatId || (l.adopted && p && p.confirmed > 0)) { out.set(l.id, "in-progress"); if (!nextGiven) nextGiven = true; continue; }
 		out.set(l.id, nextGiven ? "locked" : "next");
 		nextGiven = true;
 	}

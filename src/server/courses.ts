@@ -160,6 +160,8 @@ export function lessonProgressOf(deps: LearnerDeps, state: LearnerState, l: Cour
 	if (!chatId) return null;
 	const r = deps.chatStore.getChat(chatId);
 	if (!r?.tree) return { steps: 0, confirmed: 0, held: 0 };
+	// a converted lesson restarted in a chat of its own counts that chat once it has a plan; until then, the steps it adopted
+	if (l.chatId && l.adopted && !r.tree) return lessonProgressOf(deps, state, { ...l, chatId: undefined });
 	const nodes = lessonProgress(state, chatId, r.tree).nodes.filter((n) => !l.adopted || l.chatId || l.adopted.nodes.includes(n.id));
 	return { steps: nodes.length, confirmed: nodes.filter((n) => n.status === "checked" || n.status === "repaired").length, held: nodes.filter((n) => n.held).length };
 }
@@ -202,6 +204,7 @@ export function lessonContext(deps: LearnerDeps, c: Course, lessonId: string, st
 			? `This is a CHECKPOINT: no new material. Ask 6–10 mixed retrieval questions over these earlier lessons — ${l.steps.join("; ")} — interleaved, at least a third in his own words and some that use an idea on a fresh case. For each miss, name the gap and repair it briefly. End with what is held and what needs more work.`
 			: `Its steps (seed your plan_init with these, refined as you see fit, slugs your own): ${l.steps.join(" → ")}.` + (l.introduces.length ? ` It introduces: ${l.introduces.join(", ")}.` : "") + (l.needs.length ? ` It needs: ${l.needs.join(", ")}.` : ""),
 		before.length ? `Earlier lessons: ${before.map((x) => `${x.n}. ${x.title}${x.skipped ? " (skipped — he said he knows it)" : ""}`).join("; ")}. Build on them; do not re-teach them.` : "This is the first lesson of the course.",
+		adoptedLine(deps, state, l),
 		skipped.length ? `He skipped ${skipped.map((x) => `"${x.title}"`).join(", ")} as already known: in your opening check, ask one quick question on ${skipped.length > 1 ? "their" : "its"} objectives (${skipped.flatMap((x) => x.objectives).slice(0, 4).join("; ")}); if he misses, teach that first.` : "",
 		solid.length ? `Held from earlier lessons: ${solid.join(", ")}.` : "",
 		weak.length ? `Weak from earlier lessons (repair before building on them, if this lesson rests on them): ${weak.map((it) => it.label).join(", ")}.` : "",
@@ -216,7 +219,6 @@ export function startLesson(deps: LearnerDeps, c: Course, lessonId: string): { c
 	const all = lessonsOf(c), l = all.find((x) => x.id === lessonId);
 	if (!l) throw new Error("no such lesson");
 	if (l.chatId) return { chatId: l.chatId, created: false };
-	if (l.adopted) return { chatId: l.adopted.chatId, created: false };   // taught before the course: it goes on in that chat
 	if (c.status === "draft") { c.status = "active"; c.history.push({ at: new Date().toISOString(), why: "approved (started a lesson)" }); }
 	const chat = deps.chatStore.createChat(`Lesson ${l.n} · ${l.title}`, undefined, undefined, { course: { id: c.id, lessonId: l.id } });
 	deps.chatStore.saveMessages(chat.id, [newLessonNotesMessage(lessonContext(deps, c, l.id), { courseContext: c.id }) as never]);
@@ -246,3 +248,15 @@ export function courseNotesMarkdown(deps: LearnerDeps, c: Course): string {
 
 export type { Course };
 export const courseOfChat = (r: ChatRecord) => (r.course ? readCourse(r.course.id) : null);
+
+/** For a lesson part-taught in a chat from before the course: which of its steps were confirmed there and which not. */
+function adoptedLine(deps: LearnerDeps, state: LearnerState, l: CourseLesson): string {
+	if (!l.adopted) return "";
+	const r = deps.chatStore.getChat(l.adopted.chatId);
+	if (!r?.tree) return "";
+	const nodes = lessonProgress(state, r.id, r.tree).nodes.filter((n) => l.adopted!.nodes.includes(n.id));
+	const ok = nodes.filter((n) => n.status === "checked" || n.status === "repaired").map((n) => n.title);
+	const open = nodes.filter((n) => n.status !== "checked" && n.status !== "repaired").map((n) => n.title);
+	if (!ok.length) return "";
+	return `Part of this lesson was taught before, in an earlier long session: confirmed there — ${ok.join("; ")}${open.length ? `; not yet confirmed — ${open.join("; ")}` : ""}. Open with a quick retrieval check of the confirmed part, then teach what is not yet confirmed.`;
+}
