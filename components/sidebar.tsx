@@ -16,6 +16,7 @@ import { SettingsDialogProvider, useSettingsDialog } from "@/components/settings
 import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SidebarCourses } from "@/components/course-view";
 import { cn } from "@/lib/utils";
 import { fuzzyScore, nestChats } from "@/src/core";
 import { useServerEvent, useServerResync } from "@/components/server-events";
@@ -734,6 +735,8 @@ function SessionsSidebar() {
 						<span className="sr-only">create a new practice session</span>
 					</button>
 				</div>
+
+				<SidebarCourses />
 
 				<div className="mx-3 mb-2 flex items-center gap-2">
 					<span className="text-xs uppercase tracking-widest text-muted-foreground/70">Sessions</span>

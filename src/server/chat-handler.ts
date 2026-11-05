@@ -157,6 +157,12 @@ function resolveEngine(role: ModelRole): PiEngine | undefined {
 	return spec ? piEngineForSpec(spec, true, undefined, retentionForSlot(ROLE_SLOT[role])) : undefined;
 }
 
+/** The strong-slot engine for planning a course (2026-11): the learner's own request. */
+export function strongEngine(): PiEngine | undefined {
+	const engine = resolveEngine("teacher");
+	return engine && providerKeyPresent(engine.model.provider) ? engine : undefined;
+}
+
 /** The cheap-slot engine the learner routes use (2026-11): grading is the
  *  learner's own request (foreground); card writing ahead of time is
  *  background and honors the connection's background opt-in. */

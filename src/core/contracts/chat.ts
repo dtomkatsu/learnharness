@@ -95,6 +95,9 @@ export interface LessonVocabulary {
 	notedConfident?: string[];
 }
 
+/** A lesson of a course (2026-11): the course and which of its lessons this chat is. */
+export interface ChatCourse { id: string; lessonId: string }
+
 export interface ChatParent {
 	/** The session it was asked from. */
 	id: string;
@@ -112,6 +115,7 @@ export interface ChatRecord {
 	kind?: ChatKind;
 	/** A side thread's session of origin (absent = top level). */
 	parent?: ChatParent;
+	course?: ChatCourse;
 	/** The lesson's vocabulary ledger (2026-11): what has been taught, what the
 	 *  plan says each node introduces and needs, and terms used before they
 	 *  were taught — see core/vocabulary.ts. Absent = nothing recorded yet. */
@@ -346,6 +350,7 @@ export interface ChatSummary {
 	kind: ChatKind;
 	/** A side thread's session of origin (absent = top level). */
 	parent?: ChatParent;
+	course?: ChatCourse;
 	messageCount: number;
 	/** The session's current phase, derived from the stored plan tree. */
 	phase: Phase3;

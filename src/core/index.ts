@@ -21,6 +21,7 @@ export * from "./chains.ts";
 export * from "./side-threads.ts";
 export * from "./vocabulary.ts";
 export * from "./learner/model.ts";
+export * from "./courses.ts";
 export { retrievability, type Rating, type Schedule } from "./learner/fsrs.ts";
 export * from "./source-organization.ts";
 export * from "./source-selection.ts";

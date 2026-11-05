@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
-import type { ChatParent, ChatRecord, LessonVocabulary, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
+import type { ChatCourse, ChatParent, ChatRecord, LessonVocabulary, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
 import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
@@ -32,7 +32,7 @@ function chatFile(id: string): string {
  *  phase, busy, pendingQuestion) is already announced by turn-started /
  *  turn-settled, which the sidebar refetches on. Silence here is law,
  *  not oversight. */
-function createChat(title: string, kind?: "practice", parent?: ChatParent): ChatRecord {
+function createChat(title: string, kind?: "practice", parent?: ChatParent, extra?: { course?: ChatCourse }): ChatRecord {
 	const now = new Date().toISOString();
 	const record: ChatRecord = {
 		id: `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
@@ -45,6 +45,8 @@ function createChat(title: string, kind?: "practice", parent?: ChatParent): Chat
 		...(kind === "practice" ? { kind: "practice" as const } : {}),
 		// A side thread knows its session of origin; top-level sessions stay ABSENT.
 		...(parent ? { parent: parent.term ? { id: parent.id, term: parent.term } : { id: parent.id } } : {}),
+		// A course lesson knows its course (2026-11).
+		...(extra?.course ? { course: { id: extra.course.id, lessonId: extra.course.lessonId } } : {}),
 	};
 	fs.mkdirSync(PATHS.chats, { recursive: true });
 	writeChat(record);

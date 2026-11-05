@@ -11,6 +11,7 @@
 
 import type { LhMessage } from "./native-messages.ts";
 import type {
+	ChatCourse,
 	ChatParent,
 	ChatRecord,
 	LessonVocabulary,
@@ -36,7 +37,7 @@ export interface ChatStore {
 	/** Create a session record (persisted immediately). */
 	/** Create a session record; kind "practice" marks a practice session
 	 *  (absent = teach, the default). */
-	createChat(title: string, kind?: "practice", parent?: ChatParent): ChatRecord;
+	createChat(title: string, kind?: "practice", parent?: ChatParent, extra?: { course?: ChatCourse }): ChatRecord;
 	/** The full record, or null if unknown id / corrupt file. */
 	getChat(id: string): ChatRecord | null;
 	/** Read-modify-write the lesson vocabulary ledger (null = unknown chat). */
