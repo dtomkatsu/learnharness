@@ -179,7 +179,7 @@ export function courseView(deps: LearnerDeps, c: Course, now = Date.now()) {
 	return {
 		id: c.id, title: c.title, goal: c.goal, level: c.level, status: c.status, updatedAt: c.updatedAt, history: c.history,
 		done: all.filter((l) => ["done", "held", "skipped"].includes(states.get(l.id)!)).length, total: all.length,
-		next: next ? { id: next.id, n: next.n, title: next.title, minutes: next.minutes, state: states.get(next.id), chatId: next.chatId ?? next.adopted?.chatId ?? null } : null,
+		next: next ? { id: next.id, n: next.n, title: next.title, minutes: next.minutes, state: states.get(next.id), chatId: next.chatId ?? null } : null,
 		nextSuggestedAt: nextSuggestedAt(c, now),
 		units: c.units.map((u) => ({ id: u.id, title: u.title, why: u.why, lessons: u.lessons.map((l) => ({ ...l, n: all.find((x) => x.id === l.id)!.n, state: states.get(l.id), progress: prog.get(l.id) ?? null })) })),
 	};

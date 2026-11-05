@@ -153,7 +153,7 @@ export function CourseView({ courseId }: { courseId: string }) {
 					{u.why && <p className="mt-1 text-xs italic text-muted-foreground">{u.why}</p>}
 					<div className="mt-2 flex flex-col gap-1.5">
 						{u.lessons.map((l) => {
-							const chat = l.chatId ?? l.adopted?.chatId;
+							const chat = l.chatId;
 							return (
 								<div key={l.id} className={`rounded-lg border ${l.state === "next" || l.state === "in-progress" ? "border-foreground" : ""}`}>
 									<button type="button" className="flex w-full flex-col items-start px-3 py-2 text-left" onClick={() => setOpen(open === l.id ? null : l.id)} data-testid={`lesson-${l.id}`}>
@@ -167,6 +167,7 @@ export function CourseView({ courseId }: { courseId: string }) {
 											{l.steps.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Steps: {l.steps.join(" → ")}</p>}
 											<div className="mt-2 flex flex-wrap gap-2">
 												{chat && <Button size="sm" onClick={() => router.push(`/chat/${chat}`)}>Open the lesson</Button>}
+												{l.adopted && <Button size="sm" variant="outline" onClick={() => router.push(`/chat/${l.adopted!.chatId}`)}>The earlier session</Button>}
 												{!chat && !draft && l.state !== "skipped" && <Button size="sm" variant={l.state === "next" ? "default" : "outline"} disabled={!!busy} onClick={() => void start(l.id)}>{l.state === "locked" ? "Start anyway" : "Start"}</Button>}
 												{!chat && !draft && <Button size="sm" variant="outline" disabled={!!busy} onClick={async () => { const r = await act({ action: l.state === "skipped" ? "unskip" : "skip", lessonId: l.id }, "skip"); if (r) setV(r); }}>{l.state === "skipped" ? "Not known after all" : "Skip — I know this"}</Button>}
 											</div>
