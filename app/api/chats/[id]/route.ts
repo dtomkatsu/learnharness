@@ -1,4 +1,4 @@
-import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode } from "@/src/server";
+import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sendPending, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode } from "@/src/server";
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
@@ -22,6 +22,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 		// Also reaches idle views that missed the failing turn's stream.
 		turnError: turnFailure(id),
 		compacting: compactionInFlight(id),
+		// A send that reached the server and is still held (the client's
+		// no-ack watchdog keeps waiting on it; src/server/send-receipts.ts).
+		sendPending: sendPending(id),
 		coverage: sessionCoverage(id),
 	});
 }

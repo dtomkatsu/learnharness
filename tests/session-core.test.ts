@@ -1821,6 +1821,57 @@ describe("send's no-ack watchdog (a POST the server never acknowledges)", () => 
 		assert.equal(m.getState().error, null);
 	});
 
+	it("a typed message counts as landed only by itself, not a record that grew meanwhile", async () => {
+		const { fetch } = heldPost(() => Response.json({ messages: [{ id: "m1", role: "custom", customType: "lesson-notes", content: "note", timestamp: 1 }], turnInFlight: false }));
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().error?.message, SEND_LOST);
+	});
+
+	it("keeps waiting while the server says it holds the send (sendPending)", async () => {
+		const { fetch, checks } = heldPost((n) => Response.json({ messages: [], turnInFlight: false, compacting: false, sendPending: n < 4 }));
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().error?.message, SEND_LOST);
+		assert.equal(checks(), 6, "four held checks reset the count; two idle ones end it");
+	});
+
+	it("a 409 wait is not a verdict: a record that grows meanwhile is not this send landing", async () => {
+		// A wake turn holds the chat (409); its own messages land in the record
+		// while the identity-retry waits; then the re-POST is acknowledged.
+		let posts = 0, jobs = 0;
+		const fetch = (async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url === "/api/chat") return ++posts === 1 ? new Response("busy", { status: 409 }) : Response.json({ ok: true });
+			if (url.startsWith("/api/jobs")) return Response.json({ turnInFlight: ++jobs < 8 });
+			if (url === "/api/chats/chat_x") return Response.json({ messages: [{ id: "w1", role: "user", content: "a steer", timestamp: 1 }, { id: "w2", role: "custom", customType: "lesson-notes", content: "n", timestamp: 2 }], turnInFlight: jobs < 8 });
+			if (url === "/api/chats/chat_x/stream") return sseResponse({ type: "turn-settled" }, "[DONE]");
+			throw new Error(`unexpected fetch: ${url}`);
+		}) as typeof globalThis.fetch;
+		const m = model({ fetch, ackCheckMs: 5, pollMs: 10, waitMaxMs: 5_000 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), true);
+		assert.equal(posts, 2, "the re-POST went out: the wait was not cut short by a verdict");
+		assert.equal(m.getState().error, null);
+	});
+
+	it("a re-POST after a 409 wait is watched like the first", async () => {
+		let posts = 0, jobs = 0;
+		const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (url === "/api/chat") {
+				if (++posts === 1) return new Response("busy", { status: 409 });
+				return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+			}
+			if (url.startsWith("/api/jobs")) return Response.json({ turnInFlight: ++jobs < 4 });
+			if (url === "/api/chats/chat_x") return Response.json({ messages: [], turnInFlight: false, compacting: false });
+			throw new Error(`unexpected fetch: ${url}`);
+		}) as typeof globalThis.fetch;
+		const m = model({ fetch, ackCheckMs: 10, pollMs: 10, waitMaxMs: 5_000 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(posts, 2);
+		assert.equal(m.getState().error?.message, SEND_LOST);
+	});
+
 	it("an answer counts as landed only by its own tool result", async () => {
 		const quiz = {
 			id: "a1", role: "assistant", stopReason: "toolUse", timestamp: 0, provider: "openrouter", model: "test",

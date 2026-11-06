@@ -351,7 +351,7 @@ export class SessionModel {
 	/** The 409 identity-retry fetch (the Wave B contract): the event was
 	 *  never persisted (write-ahead happens only on acceptance), so the
 	 *  retry waits out the running turn and re-POSTs the SAME body. */
-	async postInputEvent(input: ChatInput, signal?: AbortSignal): Promise<Response> {
+	async postInputEvent(input: ChatInput, signal?: AbortSignal, retry?: { on: boolean }): Promise<Response> {
 		const body = JSON.stringify({ chatId: this.chatId, input });
 		const init: RequestInit = {
 			method: "POST",
@@ -362,12 +362,16 @@ export class SessionModel {
 		let response = await this.fetch("/api/chat", init);
 		let waited = 0;
 		while (response.status === 409) {
+			// the server answered, the wait is ours: the watchdog holds its
+			// verdicts until the re-POST, which it watches like the first
+			if (retry) retry.on = true;
 			await response.body?.cancel().catch(() => {});
 			if (signal?.aborted || waited >= this.waitMaxMs) return response;
 			await delay(this.pollMs, signal);
 			waited += this.pollMs;
 			if (signal?.aborted) return response;
 			if ((await turnInFlight(this)) !== false) continue;
+			if (retry) retry.on = false;
 			response = await this.fetch("/api/chat", init); // may 409 again → loop
 		}
 		return response;
@@ -389,31 +393,57 @@ export class SessionModel {
 		const ack = new AbortController(), stop = new AbortController();
 		const known = this.base.length;
 		let verdict: "landed" | "lost" | null = null;
-		const landedIn = (record: { messages?: LhMessage[]; turnInFlight?: boolean }): boolean => {
+		let arrived = false;
+		const retry = { on: false };
+		// Landed = THIS input's own write-ahead in the record, never just a
+		// longer record (a lesson-notes marker or steer landing meanwhile
+		// would pass a lost send off as accepted, and it would vanish
+		// silently). The record only appends, so the new tail is past `known`.
+		const landedIn = (record: { messages?: LhMessage[] }): boolean => {
 			const messages = Array.isArray(record.messages) ? record.messages : [];
-			if (input.type === "answer") return messages.some(m => m.role === "toolResult" && m.toolCallId === input.toolCallId);
-			return messages.length > known;
+			const fresh = messages.slice(known) as Array<LhMessage & { content?: unknown; customType?: string; details?: { problemCallId?: string; text?: string } }>;
+			switch (input.type) {
+				case "answer": return messages.some(m => m.role === "toolResult" && m.toolCallId === input.toolCallId);
+				case "text": return fresh.some(m => m.role === "user" && m.content === input.text);
+				case "thinking": return fresh.some(m => m.customType === "practice-thinking" && m.details?.problemCallId === input.problemCallId && m.details?.text === input.text);
+				// next / continue / retry / retry-question leave nothing that
+				// is THIS input's alone: only the ack, or a lost verdict, settles them
+				default: return false;
+			}
 		};
 		const watch = async () => {
 			let misses = 0;
 			while (!stop.signal.aborted) {
 				try { await delay(this.ackCheckMs, stop.signal); } catch { return; }
-				let record: { messages?: LhMessage[]; turnInFlight?: boolean; compacting?: boolean } | null = null;
+				let record: { messages?: LhMessage[]; turnInFlight?: boolean; compacting?: boolean; sendPending?: boolean } | null = null;
+				// A check gets the same deadline (a held check is a held pool);
+				// a plain controller, not AbortSignal.any/timeout — the phone's
+				// Safari may predate them, and then every check would fail.
+				const check = new AbortController();
+				const end = () => check.abort();
+				const timer = setTimeout(end, this.ackCheckMs);
+				stop.signal.addEventListener("abort", end, { once: true });
 				try {
-					const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`, {
-						signal: AbortSignal.any([stop.signal, AbortSignal.timeout(this.ackCheckMs)]),
-					});
+					const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`, { signal: check.signal });
 					record = res.ok ? await res.json() : null;
 				} catch { record = null; }
-				if (stop.signal.aborted) return;
+				finally { clearTimeout(timer); stop.signal.removeEventListener("abort", end); }
+				// The POST came back meanwhile: its own answer is the verdict
+				if (stop.signal.aborted || arrived) return;
+				// A 409 wait between POSTs: the server is answering, nothing is lost
+				if (retry.on) { misses = 0; continue; }
 				if (record && landedIn(record)) { verdict = "landed"; ack.abort(); return; }
-				if (record && (record.compacting || record.turnInFlight)) { misses = 0; continue; }
+				// The server holds it (sendPending: received, not yet answered),
+				// or is busy with a compaction or turn that holds sends
+				if (record && (record.sendPending || record.compacting || record.turnInFlight)) { misses = 0; continue; }
 				if (++misses >= SEND_ACK_MISSES) { verdict = "lost"; ack.abort(); return; }
 			}
 		};
 		void watch();
 		try {
-			return await this.postInputEvent(input, ack.signal);
+			const res = await this.postInputEvent(input, ack.signal, retry);
+			arrived = true;
+			return res;
 		} catch (err) {
 			if (verdict === "landed") return new Response(null, { status: 202 });
 			if (verdict === "lost") throw new Error(SEND_LOST);
