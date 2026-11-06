@@ -23,6 +23,8 @@ You write the map with `plan_init` (a mermaid `graph TD` block). It is a **map, 
 - `-->` edges are `requires` edges: from = must be understood before to.
 - **Give the map its vocabulary** (`plan_init`'s `vocabulary`): `known` — the technical terms the probe showed he already holds; and per node, the terms it `introduces` (teaches) and the terms it `needs` (relies on). A node may only need terms that are known or introduced by a node it comes after — the call is refused otherwise, with the list of problems. This is where "a term thrown at him before it was taught" is caught cheapest: if a station needs a word no earlier station teaches, the map is missing a station. Keep it to real technical vocabulary and notation, not every noun.
 
+- **Give each step an outcome and a time** (`plan_init`'s `steps`): per node, `outcome` — one line from his side, what he can do or say once the step is done ("you can say why the step goes against the gradient"), never the topic's name again — and `minutes`, a rough number. The learner sees them under each step of the plan and the minutes added up as "about N min left"; an outcome he can test himself against is what makes a step feel finished.
+
 (Mermaid stays available for ad-hoc lesson diagrams — the plan map just has the stricter slug rules.)
 
 ## The map moves with him

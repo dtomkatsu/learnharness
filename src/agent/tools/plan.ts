@@ -86,7 +86,30 @@ const planInitInput = Type.Object({
 			"Titles are free single-line text; `-->` means 'from = prerequisite' (chains fine); no subgraphs, styles, or classes.",
 	}),
 	vocabulary: Type.Optional(planVocabularyInput),
+	steps: Type.Optional(Type.Record(
+		Type.String(),
+		Type.Object({
+			outcome: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "One line, from his side: what he can do or say after this step (\"you can say why the step goes against the gradient\")." })),
+			minutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 90, description: "A rough time for the step, in minutes." })),
+		}),
+		{
+			description:
+				"Per node id: { outcome, minutes } — what he will be able to do after the step, and about how long it takes. Shown under each step of the plan and summed for 'about N min left'. " +
+				"Give it for every node; a slug that is not in the map is refused.",
+		},
+	)),
 });
+
+/** plan_init's `steps` laid onto the nodes: the outcome is the node's summary, the time its minutes. Unknown slugs are a problem, not ignored. */
+export function applySteps(tree: PlanTree, steps: Record<string, { outcome?: string; minutes?: number }> | undefined): { tree: PlanTree; problems: string[] } {
+	if (!steps) return { tree, problems: [] };
+	const ids = new Set(tree.nodes.map((n) => n.id));
+	const problems = Object.keys(steps).filter((id) => !ids.has(id)).map((id) => `steps names "${id}", which is not a node of the map`);
+	return {
+		problems,
+		tree: { ...tree, nodes: tree.nodes.map((n) => { const s = steps[n.id]; return s ? { ...n, ...(s.outcome?.trim() ? { summary: s.outcome.trim() } : {}), ...(s.minutes ? { minutes: s.minutes } : {}) } : n; }) },
+	};
+}
 
 export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> {
 	return {
@@ -99,9 +122,10 @@ export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> 
 				"A mermaid graph block (any direction): one node per line (`slug[Short Title]` — slugs are permanent lowercase ids: a-z, 0-9, hyphens/underscores), " +
 				"`-->` edges meaning 'from must be understood before to' (chains fine). 5–15 nodes: a map, not a syllabus — one reasoning step per node, compress. " +
 				"Give `vocabulary` too: the terms the learner already knows, and per node the technical terms it introduces and needs — a node may only need terms that are known or introduced by a node before it (refused otherwise). " +
+				"Give `steps` too: per node, a one-line outcome (what he can do after it) and a rough number of minutes. " +
 				"Every check you fire names the node it assesses via `nodeId`; where the lesson stands derives from those tags.",
 			parameters: planInitInput,
-			execute: serverExecute("plan_init", planInitInput, async ({ mermaid, vocabulary }) => {
+			execute: serverExecute("plan_init", planInitInput, async ({ mermaid, vocabulary, steps }) => {
 				const { chatId, chatStore } = ctx;
 				const record = chatStore.getChat(chatId);
 				if (!record) return { ok: false, error: `Chat not found: ${chatId}` };
@@ -116,7 +140,10 @@ export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> 
 				try {
 					// createTree validates the structure (duplicate ids, missing
 					// edge endpoints, self-loops, cycles → PlanTreeError).
-					const next = createTree(parsed.plan.nodes, parsed.plan.edges);
+					const made = createTree(parsed.plan.nodes, parsed.plan.edges);
+					const laid = applySteps(made, steps);
+					if (laid.problems.length) return { ok: false, error: laid.problems.join("\n") };
+					const next = laid.tree;
 					// The vocabulary gate (2026-11): a node may only need terms that are
 					// known or introduced before it. Refused like a structural problem —
 					// the teacher fixes and re-calls; nothing is saved.

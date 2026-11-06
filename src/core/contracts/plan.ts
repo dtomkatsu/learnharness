@@ -15,8 +15,10 @@ export interface PlanNode {
 	id: string;
 	/** Short label for the tree panel. */
 	title: string;
-	/** 1-2 sentences: what this node covers. */
+	/** 1-2 sentences: what this node covers — or, when plan_init gave `steps`, what the learner can do after it ("you can …"). */
 	summary?: string;
+	/** A rough time for the step in minutes (plan_init's `steps`): the page sums what is left. */
+	minutes?: number;
 }
 
 export interface PlanEdge {

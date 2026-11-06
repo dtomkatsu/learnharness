@@ -92,6 +92,27 @@ describe("the ledger", () => {
 	});
 });
 
+describe("plan_init's steps: an outcome and minutes on each node", () => {
+	const exec = (chatId: string, input: unknown) => planTools({ chatId, chatStore }).plan_init!.execute("t", input as never);
+	it("lays the outcome on the node's summary and the time on its minutes, and keeps nodes it names nothing for", async () => {
+		const c = chatStore.createChat("steps");
+		const r = await exec(c.id, { mermaid: MAP, steps: { gradient: { outcome: " you can say which way the gradient points ", minutes: 8 } } });
+		assert.equal((r.details as { ok: boolean }).ok, true);
+		const nodes = chatStore.getChat(c.id)!.tree!.nodes;
+		const g = nodes.find((n) => n.id === "gradient")!;
+		assert.equal(g.summary, "you can say which way the gradient points");
+		assert.equal(g.minutes, 8);
+		assert.equal(nodes.find((n) => n.id !== "gradient")!.minutes, undefined);
+	});
+	it("refuses steps for a slug that is not in the map — nothing is saved", async () => {
+		const c = chatStore.createChat("steps bad");
+		const r = await exec(c.id, { mermaid: MAP, steps: { nope: { minutes: 5 } } });
+		assert.equal((r.details as { ok: boolean }).ok, false);
+		assert.match((r.details as { error: string }).error, /"nope", which is not a node/);
+		assert.equal(chatStore.getChat(c.id)!.tree, undefined);
+	});
+});
+
 describe("plan_init's vocabulary gate", () => {
 	const exec = (chatId: string, input: unknown) => planTools({ chatId, chatStore }).plan_init!.execute("t", input as never);
 	it("refuses a plan that needs an untaught term — nothing is saved", async () => {
