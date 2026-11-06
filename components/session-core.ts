@@ -42,12 +42,23 @@ export const TURN_POLL_MS = 500;
 /** Give up waiting (a wake turn can run long) and surface the 409. */
 export const TURN_WAIT_MAX_MS = 30_000;
 
+/** A send's ack is ~100ms (Diet B); past this, ask the record whether the
+ *  server has it (the no-ack watchdog). */
+export const SEND_ACK_CHECK_MS = 15_000;
+/** Checks in a row that find the server idle and the input absent before
+ *  the send is called lost (the compaction gate keeps it waiting). */
+export const SEND_ACK_MISSES = 2;
+export const SEND_LOST =
+	"Your input didn't reach LearnHarness, so nothing was saved. Send it again.";
+
 export interface SessionModelDeps {
 	/** Injectable fetch (tests); defaults to the global. */
 	fetch?: typeof globalThis.fetch;
 	/** Injectable retry timing (tests). */
 	pollMs?: number;
 	waitMaxMs?: number;
+	/** Injectable watchdog timing (tests). */
+	ackCheckMs?: number;
 }
 
 /** A local optimistic id (never a server stamp — absorption and the
@@ -231,6 +242,7 @@ export class SessionModel {
 	private steerQueueValue: SteerQueueItem[] = [];
 	private readonly pollMs: number;
 	private readonly waitMaxMs: number;
+	private readonly ackCheckMs: number;
 	private onReattachSettled?: () => void;
 	/** The hook's re-render trigger (set by the adapter). */
 	onChange?: () => void;
@@ -277,6 +289,7 @@ export class SessionModel {
 		this.fetch = opts.fetch ?? ((...args) => globalThis.fetch(...args));
 		this.pollMs = opts.pollMs ?? TURN_POLL_MS;
 		this.waitMaxMs = opts.waitMaxMs ?? TURN_WAIT_MAX_MS;
+		this.ackCheckMs = opts.ackCheckMs ?? SEND_ACK_CHECK_MS;
 		this.onChange = opts.onChange;
 		this.onReattachSettled = opts.onReattachSettled;
 	}
@@ -358,6 +371,56 @@ export class SessionModel {
 			response = await this.fetch("/api/chat", init); // may 409 again → loop
 		}
 		return response;
+	}
+
+	/** THE NO-ACK WATCHDOG (2026-11-06 — a send sat on Thinking… for good:
+	 *  the server never saw it, no write-ahead, nothing logged, and the
+	 *  POST had no deadline). The ack is ~100ms, so past SEND_ACK_CHECK_MS
+	 *  the record is asked: compacting or a turn running means the server
+	 *  is legitimately holding it (keep waiting); this input in the record
+	 *  means it was accepted and only the ack went missing (attach as
+	 *  usual); SEND_ACK_MISSES checks of neither — or checks that cannot
+	 *  get through at all, the browser's connection pool being full —
+	 *  abandon the POST as lost. A lost answer is safe to resend: send()'s
+	 *  recovery refetches the record before POSTing again. */
+	private async postAcknowledged(input: ChatInput): Promise<Response> {
+		// ack aborts the POST, only on a verdict; stop ends the watch (a
+		// finished POST must never see an abort — the teardown law above)
+		const ack = new AbortController(), stop = new AbortController();
+		const known = this.base.length;
+		let verdict: "landed" | "lost" | null = null;
+		const landedIn = (record: { messages?: LhMessage[]; turnInFlight?: boolean }): boolean => {
+			const messages = Array.isArray(record.messages) ? record.messages : [];
+			if (input.type === "answer") return messages.some(m => m.role === "toolResult" && m.toolCallId === input.toolCallId);
+			return messages.length > known;
+		};
+		const watch = async () => {
+			let misses = 0;
+			while (!stop.signal.aborted) {
+				try { await delay(this.ackCheckMs, stop.signal); } catch { return; }
+				let record: { messages?: LhMessage[]; turnInFlight?: boolean; compacting?: boolean } | null = null;
+				try {
+					const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`, {
+						signal: AbortSignal.any([stop.signal, AbortSignal.timeout(this.ackCheckMs)]),
+					});
+					record = res.ok ? await res.json() : null;
+				} catch { record = null; }
+				if (stop.signal.aborted) return;
+				if (record && landedIn(record)) { verdict = "landed"; ack.abort(); return; }
+				if (record && (record.compacting || record.turnInFlight)) { misses = 0; continue; }
+				if (++misses >= SEND_ACK_MISSES) { verdict = "lost"; ack.abort(); return; }
+			}
+		};
+		void watch();
+		try {
+			return await this.postInputEvent(input, ack.signal);
+		} catch (err) {
+			if (verdict === "landed") return new Response(null, { status: 202 });
+			if (verdict === "lost") throw new Error(SEND_LOST);
+			throw err;
+		} finally {
+			stop.abort();
+		}
 	}
 
 	/**
@@ -726,7 +789,7 @@ export class SessionModel {
 			// starve the connection pool, so it needs no teardown guard. The
 			// STREAM consume stays on the controller — releasing that held
 			// connection is Diet A's whole job.
-			const res = await this.postInputEvent(input);
+			const res = await this.postAcknowledged(input);
 			if (res.status === 409) {
 				throw new Error("A turn is already running — try again in a moment.");
 			}

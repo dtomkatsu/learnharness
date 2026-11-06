@@ -21,7 +21,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { absorbed, pendingCallTool, SessionModel } from "../components/session-core.ts";
+import { absorbed, pendingCallTool, SEND_LOST, SessionModel } from "../components/session-core.ts";
 import type { ChatInput } from "../src/core/input-events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
@@ -1765,5 +1765,72 @@ describe("absorbed — the custom role (the doubled thinking card)", () => {
 		const customs = m.getState().nativeMessages.filter((x) => (x as { role?: string }).role === "custom");
 		assert.equal(customs.length, 1, "the server copy replaced the optimistic one — no doubling");
 		assert.equal((customs[0] as { id?: string }).id, "srv_1");
+	});
+});
+
+// ─── the no-ack watchdog ───────────────────────────────────────────────────
+
+describe("send's no-ack watchdog (a POST the server never acknowledges)", () => {
+	/** A POST that never answers until its signal aborts (the browser held it,
+	 *  or it never reached the server); `record` scripts the watchdog's checks. */
+	function heldPost(record: (n: number) => Response, stream?: () => Response): { fetch: typeof globalThis.fetch; checks: () => number } {
+		let n = 0;
+		const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (url === "/api/chat") {
+				return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+			}
+			if (url === "/api/chats/chat_x") return record(n++);
+			if (url === "/api/chats/chat_x/stream" && stream) return stream();
+			throw new Error(`unexpected fetch: ${url}`);
+		}) as typeof globalThis.fetch;
+		return { fetch, checks: () => n };
+	}
+
+	it("calls a send lost after the checks find the server idle and the input absent", async () => {
+		const { fetch, checks } = heldPost(() => Response.json({ messages: [], turnInFlight: false, compacting: false }));
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().status, "error");
+		assert.equal(m.getState().error?.message, SEND_LOST);
+		assert.equal(checks(), 2);
+	});
+
+	it("calls a send lost when the checks cannot get through either (a full connection pool)", async () => {
+		const { fetch } = heldPost(() => { throw new TypeError("Failed to fetch"); });
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().error?.message, SEND_LOST);
+	});
+
+	it("keeps waiting while the server compacts or runs a turn", async () => {
+		const { fetch, checks } = heldPost((n) => Response.json({ messages: [], turnInFlight: n === 3, compacting: n < 3 }));
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().error?.message, SEND_LOST);
+		assert.equal(checks(), 6, "four busy checks reset the count; two idle ones end it");
+	});
+
+	it("attaches as usual when the input is in the record (accepted, only the ack lost)", async () => {
+		const { fetch } = heldPost(
+			() => Response.json({ messages: [{ id: "u1", role: "user", content: "hi", timestamp: 1 }], turnInFlight: false }),
+			() => sseResponse({ type: "turn-settled" }, "[DONE]"),
+		);
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), true);
+		assert.equal(m.getState().error, null);
+	});
+
+	it("an answer counts as landed only by its own tool result", async () => {
+		const quiz = {
+			id: "a1", role: "assistant", stopReason: "toolUse", timestamp: 0, provider: "openrouter", model: "test",
+			usage: { input: 0, output: 0, total: 0, cacheReads: 0, cacheWrites: 0 },
+			content: [{ type: "toolCall", id: "call-1", name: "quiz", arguments: { question: "Q?", choices: ["a", "b"] } }],
+		} as unknown as LhMessage;
+		// The record grew (a marker landed) but holds no result for call-1: still lost.
+		const { fetch } = heldPost(() => Response.json({ messages: [quiz, { id: "m1", role: "custom", content: "note", timestamp: 1 }], turnInFlight: false }));
+		const m = model({ initialMessages: [quiz], fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "answer", toolCallId: "call-1", answer: { correct: true } as never }), false);
+		assert.equal(m.getState().error?.message, SEND_LOST);
 	});
 });
