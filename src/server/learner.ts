@@ -291,6 +291,16 @@ export function cardFace(c: Card, mode: ReviewMode, it: ItemState): CardFace & {
 	return f && typeof f.prompt === "string" ? { mode, ...f } : { mode: "recall", ...c.recall };
 }
 
+/** What practice has said about an item (2026-11): how many problems on it concluded, the last one (when, and as the rating it counted for:
+ *  3 clean, 2 with hints, 1 missed), and how many were missed. Practice and review rate the same item on the same schedule; this is the
+ *  part of that history the page shows beside a card and on a lesson. Undefined when none. */
+export function practiceOf(it: ItemState): { n: number; last: string; lastRating: Rating; misses: number } | undefined {
+	const ps = it.ratings.filter((r) => r.source === "practice");
+	if (!ps.length) return undefined;
+	const last = ps[ps.length - 1]!;
+	return { n: ps.length, last: last.at, lastRating: last.rating, misses: ps.filter((r) => r.rating === 1).length };
+}
+
 export function itemView(state: LearnerState, it: ItemState, cards: Record<ItemId, Card> = readCards()) {
 	const c = cards[it.id];
 	const ex = c?.example ?? (it.example ? { sentence: it.example, translation: it.exampleEn ?? "" } : null);
@@ -300,6 +310,7 @@ export function itemView(state: LearnerState, it: ItemState, cards: Record<ItemI
 		weakestPremise: it.weakestPremise ? { ...it.weakestPremise, label: state.items.get(it.weakestPremise.id)?.label ?? "" } : null,
 		due: it.schedule.state ? new Date(it.schedule.due).toISOString() : null,
 		stabilityDays: it.schedule.state ? Math.round(it.schedule.stability * 10) / 10 : null,
+		...(practiceOf(it) ? { practice: practiceOf(it) } : {}),
 		reps: it.schedule.reps, lapses: it.lapses, lessons: it.lessons, asked: it.asked, usedEarly: it.usedEarly,
 		misconceptions: it.misconceptions, drift: it.drift, lastSeen: it.lastSeen,
 		aliases: it.aliases, ...(it.lang ? { lang: it.lang } : {}), ...(it.deck ? { deck: it.deck, tags: it.tags ?? [] } : {}),
@@ -323,6 +334,7 @@ export function queueView(state: LearnerState, opts: { limit?: number; only?: Se
 			...(it.lapses >= 2 && c.elaboration ? { elaboration: c.elaboration } : {}),
 			...(it.lapses >= 3 && c.hook ? { hook: c.hook } : {}),
 			...(q.mode === "discriminate" && c.discriminate ? { with: c.discriminate.with } : {}),
+			...(practiceOf(it) ? { practice: practiceOf(it) } : {}),
 			status: it.status, generated: !!cards[q.itemId],
 		};
 	});

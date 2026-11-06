@@ -138,3 +138,26 @@ describe("the vague-prompt lint", () => {
 		assert.deepEqual(open.map((o) => o.mode + o.prompt), ["recalla", "whyb", "applyc", "applyd"]);
 	});
 });
+
+describe("what practice has said about an item", () => {
+	it("a concluded practice problem is a rating on the same item, and the item and the queue say so", () => {
+		store.appendEvidence([
+			{ kind: "practice", chatId: "chat_p", toolCallId: "t1", items: ["node:slope"], outcome: "solved", rung: null } as never,
+			{ kind: "practice", chatId: "chat_p", toolCallId: "t2", items: ["node:slope"], outcome: "surrendered" } as never,
+		]);
+		const state = server.learnerState(server.stores);
+		const it = state.items.get("node:slope")!;
+		const p = learner.practiceOf(it)!;
+		assert.equal(p.n, 2); assert.equal(p.misses, 1); assert.equal(p.lastRating, 1);
+		assert.deepEqual(it.lessons, ["chat_p"], "the practice session is a lesson of the item");
+		assert.deepEqual(learner.itemView(state, it).practice, p);
+		const later = server.learnerState(server.stores, Date.now() + 30 * 86400000);   // far enough on that a miss and a clean solve are both due
+		const row = learner.queueView(later, { limit: 20, only: new Set(["node:slope"]) }).find((x) => x.itemId === "node:slope");
+		assert.deepEqual(row?.practice, p);
+	});
+	it("an item practice never touched has no practice field", () => {
+		const state = server.learnerState(server.stores);
+		assert.equal(learner.practiceOf(state.items.get("term:softmax")!), undefined);
+		assert.equal("practice" in learner.itemView(state, state.items.get("term:softmax")!), false);
+	});
+});
