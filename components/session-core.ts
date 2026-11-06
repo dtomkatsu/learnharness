@@ -41,6 +41,8 @@ export type SessionStatus = "ready" | "submitted" | "streaming" | "error";
 export const TURN_POLL_MS = 500;
 /** Give up waiting (a wake turn can run long) and surface the 409. */
 export const TURN_WAIT_MAX_MS = 30_000;
+/** One turnInFlight poll's deadline inside that wait. */
+export const TURN_CHECK_MS = 10_000;
 
 /** A send's ack is ~100ms (Diet B); past this, ask the record whether the
  *  server has it (the no-ack watchdog). */
@@ -48,8 +50,13 @@ export const SEND_ACK_CHECK_MS = 15_000;
 /** Checks in a row that find the server idle and the input absent before
  *  the send is called lost (the compaction gate keeps it waiting). */
 export const SEND_ACK_MISSES = 2;
+/** Checks in a row that cannot get through at all (no answer, not even
+ *  "never seen") before the client says it cannot confirm either way. */
+export const SEND_BLIND_CHECKS = 3;
 export const SEND_LOST =
 	"Your input didn't reach LearnHarness, so nothing was saved. Send it again.";
+export const SEND_UNCONFIRMED =
+	"LearnHarness isn't answering, so this couldn't be confirmed. Reload the page to see whether it arrived before sending it again.";
 
 export interface SessionModelDeps {
 	/** Injectable fetch (tests); defaults to the global. */
@@ -59,6 +66,7 @@ export interface SessionModelDeps {
 	waitMaxMs?: number;
 	/** Injectable watchdog timing (tests). */
 	ackCheckMs?: number;
+	turnCheckMs?: number;
 }
 
 /** A local optimistic id (never a server stamp — absorption and the
@@ -83,12 +91,18 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function turnInFlight(model: SessionModel): Promise<boolean | null> {
+	// Its own deadline: a poll held by the browser (a full connection pool)
+	// would otherwise stall the 409 wait before waitMaxMs could ever end it
+	const check = new AbortController();
+	const timer = setTimeout(() => check.abort(), model.turnCheckMs);
 	try {
-		const res = await model.fetch(`/api/jobs?chatId=${encodeURIComponent(model.chatId)}`);
+		const res = await model.fetch(`/api/jobs?chatId=${encodeURIComponent(model.chatId)}`, { signal: check.signal });
 		if (!res.ok) return null;
 		return ((await res.json()) as { turnInFlight?: boolean }).turnInFlight === true;
 	} catch {
 		return null; // network hiccup: keep waiting, the deadline bounds us
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
@@ -243,6 +257,7 @@ export class SessionModel {
 	private readonly pollMs: number;
 	private readonly waitMaxMs: number;
 	private readonly ackCheckMs: number;
+	readonly turnCheckMs: number;
 	private onReattachSettled?: () => void;
 	/** The hook's re-render trigger (set by the adapter). */
 	onChange?: () => void;
@@ -290,6 +305,7 @@ export class SessionModel {
 		this.pollMs = opts.pollMs ?? TURN_POLL_MS;
 		this.waitMaxMs = opts.waitMaxMs ?? TURN_WAIT_MAX_MS;
 		this.ackCheckMs = opts.ackCheckMs ?? SEND_ACK_CHECK_MS;
+		this.turnCheckMs = opts.turnCheckMs ?? TURN_CHECK_MS;
 		this.onChange = opts.onChange;
 		this.onReattachSettled = opts.onReattachSettled;
 	}
@@ -351,8 +367,8 @@ export class SessionModel {
 	/** The 409 identity-retry fetch (the Wave B contract): the event was
 	 *  never persisted (write-ahead happens only on acceptance), so the
 	 *  retry waits out the running turn and re-POSTs the SAME body. */
-	async postInputEvent(input: ChatInput, signal?: AbortSignal, retry?: { on: boolean }): Promise<Response> {
-		const body = JSON.stringify({ chatId: this.chatId, input });
+	async postInputEvent(input: ChatInput, signal?: AbortSignal, retry?: { on: boolean }, sendId?: string): Promise<Response> {
+		const body = JSON.stringify(sendId ? { chatId: this.chatId, input, sendId } : { chatId: this.chatId, input });
 		const init: RequestInit = {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -360,15 +376,15 @@ export class SessionModel {
 			signal,
 		};
 		let response = await this.fetch("/api/chat", init);
-		let waited = 0;
+		// wall-clock, not poll intervals: a slow turnInFlight poll counts too
+		const waitStart = Date.now();
 		while (response.status === 409) {
 			// the server answered, the wait is ours: the watchdog holds its
 			// verdicts until the re-POST, which it watches like the first
 			if (retry) retry.on = true;
 			await response.body?.cancel().catch(() => {});
-			if (signal?.aborted || waited >= this.waitMaxMs) return response;
+			if (signal?.aborted || Date.now() - waitStart >= this.waitMaxMs) return response;
 			await delay(this.pollMs, signal);
-			waited += this.pollMs;
 			if (signal?.aborted) return response;
 			if ((await turnInFlight(this)) !== false) continue;
 			if (retry) retry.on = false;
@@ -378,75 +394,80 @@ export class SessionModel {
 	}
 
 	/** THE NO-ACK WATCHDOG (2026-11-06 — a send sat on Thinking… for good:
-	 *  the server never saw it, no write-ahead, nothing logged, and the
-	 *  POST had no deadline). The ack is ~100ms, so past SEND_ACK_CHECK_MS
-	 *  the record is asked: compacting or a turn running means the server
-	 *  is legitimately holding it (keep waiting); this input in the record
-	 *  means it was accepted and only the ack went missing (attach as
-	 *  usual); SEND_ACK_MISSES checks of neither — or checks that cannot
-	 *  get through at all, the browser's connection pool being full —
-	 *  abandon the POST as lost. A lost answer is safe to resend: send()'s
-	 *  recovery refetches the record before POSTing again. */
+	 *  the server never saw it, no write-ahead, nothing logged, and the POST
+	 *  had no deadline). Each POST carries a sendId; past SEND_ACK_CHECK_MS
+	 *  without the ack the server is asked about THAT send
+	 *  (src/server/send-receipts.ts): answered → accepted, only the ack went
+	 *  missing (attach as usual); held → the server has it (a compaction or
+	 *  catalog refresh can hold it), keep waiting; never seen, SEND_ACK_MISSES
+	 *  times → cancel it there first, and only a cancel the server confirms
+	 *  ("cancelled": it will refuse the POST if it turns up) makes it lost —
+	 *  so "send it again" can never run an input twice. A check that cannot
+	 *  get through is no evidence either way: SEND_BLIND_CHECKS of those end
+	 *  the wait as unconfirmed (the learner reloads and looks), never as lost.
+	 *  A 409 wait is the server answering: no verdicts until the re-POST. */
 	private async postAcknowledged(input: ChatInput): Promise<Response> {
 		// ack aborts the POST, only on a verdict; stop ends the watch (a
 		// finished POST must never see an abort — the teardown law above)
 		const ack = new AbortController(), stop = new AbortController();
-		const known = this.base.length;
-		let verdict: "landed" | "lost" | null = null;
+		const sendId = localId();
+		let verdict: "landed" | "lost" | "unconfirmed" | null = null;
 		let arrived = false;
 		const retry = { on: false };
-		// Landed = THIS input's own write-ahead in the record, never just a
-		// longer record (a lesson-notes marker or steer landing meanwhile
-		// would pass a lost send off as accepted, and it would vanish
-		// silently). The record only appends, so the new tail is past `known`.
-		const landedIn = (record: { messages?: LhMessage[] }): boolean => {
-			const messages = Array.isArray(record.messages) ? record.messages : [];
-			const fresh = messages.slice(known) as Array<LhMessage & { content?: unknown; customType?: string; details?: { problemCallId?: string; text?: string } }>;
-			switch (input.type) {
-				case "answer": return messages.some(m => m.role === "toolResult" && m.toolCallId === input.toolCallId);
-				case "text": return fresh.some(m => m.role === "user" && m.content === input.text);
-				case "thinking": return fresh.some(m => m.customType === "practice-thinking" && m.details?.problemCallId === input.problemCallId && m.details?.text === input.text);
-				// next / continue / retry / retry-question leave nothing that
-				// is THIS input's alone: only the ack, or a lost verdict, settles them
-				default: return false;
-			}
+		// One question to the server under the check deadline; null when it
+		// cannot be asked or answers with an error. A plain controller, not
+		// AbortSignal.any/timeout — the phone's Safari may predate them.
+		const ask = async (url: string, init?: RequestInit): Promise<{ send?: unknown; state?: unknown } | null> => {
+			const check = new AbortController();
+			const end = () => check.abort();
+			const timer = setTimeout(end, this.ackCheckMs);
+			stop.signal.addEventListener("abort", end, { once: true });
+			try {
+				const res = await this.fetch(url, { ...init, signal: check.signal });
+				return res.ok ? await res.json() : null;
+			} catch { return null; }
+			finally { clearTimeout(timer); stop.signal.removeEventListener("abort", end); }
 		};
+		const chat = encodeURIComponent(this.chatId);
 		const watch = async () => {
-			let misses = 0;
+			// blind: checks in a row that got no answer; failedCancels: cancels
+			// that got none (a check getting through must not reset these, or
+			// a server that answers GETs but not the cancel loops for good)
+			let misses = 0, blind = 0, failedCancels = 0;
+			const settle = (v: "landed" | "lost" | "unconfirmed") => { verdict = v; ack.abort(); };
 			while (!stop.signal.aborted) {
 				try { await delay(this.ackCheckMs, stop.signal); } catch { return; }
-				let record: { messages?: LhMessage[]; turnInFlight?: boolean; compacting?: boolean; sendPending?: boolean } | null = null;
-				// A check gets the same deadline (a held check is a held pool);
-				// a plain controller, not AbortSignal.any/timeout — the phone's
-				// Safari may predate them, and then every check would fail.
-				const check = new AbortController();
-				const end = () => check.abort();
-				const timer = setTimeout(end, this.ackCheckMs);
-				stop.signal.addEventListener("abort", end, { once: true });
-				try {
-					const res = await this.fetch(`/api/chats/${encodeURIComponent(this.chatId)}`, { signal: check.signal });
-					record = res.ok ? await res.json() : null;
-				} catch { record = null; }
-				finally { clearTimeout(timer); stop.signal.removeEventListener("abort", end); }
+				const record = await ask(`/api/chats/${chat}?send=${encodeURIComponent(sendId)}`);
 				// The POST came back meanwhile: its own answer is the verdict
 				if (stop.signal.aborted || arrived) return;
-				// A 409 wait between POSTs: the server is answering, nothing is lost
-				if (retry.on) { misses = 0; continue; }
-				if (record && landedIn(record)) { verdict = "landed"; ack.abort(); return; }
-				// The server holds it (sendPending: received, not yet answered),
-				// or is busy with a compaction or turn that holds sends
-				if (record && (record.sendPending || record.compacting || record.turnInFlight)) { misses = 0; continue; }
-				if (++misses >= SEND_ACK_MISSES) { verdict = "lost"; ack.abort(); return; }
+				if (retry.on) { misses = blind = 0; continue; }
+				if (!record) { if (++blind >= SEND_BLIND_CHECKS) return settle("unconfirmed"); continue; }
+				blind = 0;
+				if (record.send === "answered") return settle("landed");
+				if (record.send === "held") { misses = 0; continue; }
+				if (++misses < SEND_ACK_MISSES) continue;
+				// About to call it lost: the server cancels it, or says it has it.
+				const cancel = await ask("/api/chat", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ chatId: this.chatId, cancelSend: sendId }),
+				});
+				if (stop.signal.aborted || arrived) return;
+				if (!cancel) { misses = SEND_ACK_MISSES - 1; if (++failedCancels >= SEND_BLIND_CHECKS) return settle("unconfirmed"); continue; }
+				if (cancel.state === "cancelled") return settle("lost");
+				if (cancel.state === "answered") return settle("landed");
+				misses = 0; // held after all
 			}
 		};
 		void watch();
 		try {
-			const res = await this.postInputEvent(input, ack.signal, retry);
+			const res = await this.postInputEvent(input, ack.signal, retry, sendId);
 			arrived = true;
 			return res;
 		} catch (err) {
 			if (verdict === "landed") return new Response(null, { status: 202 });
 			if (verdict === "lost") throw new Error(SEND_LOST);
+			if (verdict === "unconfirmed") throw new Error(SEND_UNCONFIRMED);
 			throw err;
 		} finally {
 			stop.abort();

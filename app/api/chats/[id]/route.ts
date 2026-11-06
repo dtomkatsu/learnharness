@@ -1,6 +1,6 @@
-import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sendPending, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode } from "@/src/server";
+import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sendPending, sendState, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode } from "@/src/server";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
 	const chat = getChat(id);
 	if (!chat) return Response.json({ error: "Not found" }, { status: 404 });
@@ -25,6 +25,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 		// A send that reached the server and is still held (the client's
 		// no-ack watchdog keeps waiting on it; src/server/send-receipts.ts).
 		sendPending: sendPending(id),
+		// ?send=<sendId>: what the server knows of that one send (held /
+		// answered / cancelled / null) — the watchdog's question, exactly.
+		...(sendIdOf(req) ? { send: sendState(id, sendIdOf(req)!) } : {}),
 		coverage: sessionCoverage(id),
 	});
 }
@@ -100,3 +103,6 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 	});
 }
 
+function sendIdOf(req: Request): string | null {
+	return new URL(req.url).searchParams.get("send") || null;
+}

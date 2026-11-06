@@ -21,7 +21,7 @@
  */
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { absorbed, pendingCallTool, SEND_LOST, SessionModel } from "../components/session-core.ts";
+import { absorbed, pendingCallTool, SEND_LOST, SEND_UNCONFIRMED, SessionModel } from "../components/session-core.ts";
 import type { ChatInput } from "../src/core/input-events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
@@ -254,7 +254,9 @@ describe("send (one input event, verbatim consumption)", () => {
 		assert.match((m.getState().nativeMessages.at(-1) as { id?: string }).id ?? "", /^c_/);
 		assert.equal(m.getState().messages.at(-1)!.parts[0]!.text, "my topic");
 		await pending;
-		assert.deepEqual(JSON.parse(posts[0]!), { chatId: "chat_x", input: { type: "text", text: "my topic" } });
+		const { sendId, ...wire } = JSON.parse(posts[0]!);
+		assert.deepEqual(wire, { chatId: "chat_x", input: { type: "text", text: "my topic" } });
+		assert.match(sendId, /^c_/, "send() tags each POST for the no-ack watchdog");
 		assert.equal(m.getState().status, "ready");
 		// The streamed assistant REPLACED through full partials (never deltas):
 		const view = m.getState().messages;
@@ -355,7 +357,8 @@ describe("send (one input event, verbatim consumption)", () => {
 		assert.equal(quizPart.state, "output-available");
 		assert.deepEqual(quizPart.output, { correct: true });
 		await pending;
-		assert.deepEqual(JSON.parse(postBody), {
+		const { sendId: _sendId, ...postWire } = JSON.parse(postBody);
+		assert.deepEqual(postWire, {
 			chatId: "chat_x",
 			input: { type: "answer", toolCallId: "call-1", answer: { correct: true } },
 		});
@@ -1771,117 +1774,129 @@ describe("absorbed — the custom role (the doubled thinking card)", () => {
 // ─── the no-ack watchdog ───────────────────────────────────────────────────
 
 describe("send's no-ack watchdog (a POST the server never acknowledges)", () => {
-	/** A POST that never answers until its signal aborts (the browser held it,
-	 *  or it never reached the server); `record` scripts the watchdog's checks. */
-	function heldPost(record: (n: number) => Response, stream?: () => Response): { fetch: typeof globalThis.fetch; checks: () => number } {
-		let n = 0;
+	/** A scripted server: `post` answers each /api/chat send (undefined = hold it
+	 *  until aborted — the browser kept it, or it never arrived); `check` answers
+	 *  the record GET for that send (?send=); `cancel` answers a cancelSend. */
+	function server(opts: {
+		post?: (n: number) => Response | undefined;
+		check: (n: number) => Response;
+		cancel?: (n: number) => Response;
+		jobs?: (n: number) => Response | undefined;
+	}) {
+		const seen = { posts: [] as string[], checks: 0, cancels: 0, jobs: 0, sendIds: [] as string[] };
+		const held = (init?: RequestInit) => new Promise<Response>((_, reject) =>
+			init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
 		const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 			const url = String(input);
 			if (url === "/api/chat") {
-				return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+				const body = JSON.parse(String(init?.body));
+				if (body.cancelSend) { seen.cancels++; return opts.cancel?.(seen.cancels) ?? Response.json({ state: "cancelled" }); }
+				seen.posts.push(String(init?.body)); seen.sendIds.push(body.sendId);
+				return opts.post?.(seen.posts.length) ?? held(init);
 			}
-			if (url === "/api/chats/chat_x") return record(n++);
-			if (url === "/api/chats/chat_x/stream" && stream) return stream();
-			throw new Error(`unexpected fetch: ${url}`);
-		}) as typeof globalThis.fetch;
-		return { fetch, checks: () => n };
-	}
-
-	it("calls a send lost after the checks find the server idle and the input absent", async () => {
-		const { fetch, checks } = heldPost(() => Response.json({ messages: [], turnInFlight: false, compacting: false }));
-		const m = model({ fetch, ackCheckMs: 10 });
-		assert.equal(await m.send({ type: "text", text: "hi" }), false);
-		assert.equal(m.getState().status, "error");
-		assert.equal(m.getState().error?.message, SEND_LOST);
-		assert.equal(checks(), 2);
-	});
-
-	it("calls a send lost when the checks cannot get through either (a full connection pool)", async () => {
-		const { fetch } = heldPost(() => { throw new TypeError("Failed to fetch"); });
-		const m = model({ fetch, ackCheckMs: 10 });
-		assert.equal(await m.send({ type: "text", text: "hi" }), false);
-		assert.equal(m.getState().error?.message, SEND_LOST);
-	});
-
-	it("keeps waiting while the server compacts or runs a turn", async () => {
-		const { fetch, checks } = heldPost((n) => Response.json({ messages: [], turnInFlight: n === 3, compacting: n < 3 }));
-		const m = model({ fetch, ackCheckMs: 10 });
-		assert.equal(await m.send({ type: "text", text: "hi" }), false);
-		assert.equal(m.getState().error?.message, SEND_LOST);
-		assert.equal(checks(), 6, "four busy checks reset the count; two idle ones end it");
-	});
-
-	it("attaches as usual when the input is in the record (accepted, only the ack lost)", async () => {
-		const { fetch } = heldPost(
-			() => Response.json({ messages: [{ id: "u1", role: "user", content: "hi", timestamp: 1 }], turnInFlight: false }),
-			() => sseResponse({ type: "turn-settled" }, "[DONE]"),
-		);
-		const m = model({ fetch, ackCheckMs: 10 });
-		assert.equal(await m.send({ type: "text", text: "hi" }), true);
-		assert.equal(m.getState().error, null);
-	});
-
-	it("a typed message counts as landed only by itself, not a record that grew meanwhile", async () => {
-		const { fetch } = heldPost(() => Response.json({ messages: [{ id: "m1", role: "custom", customType: "lesson-notes", content: "note", timestamp: 1 }], turnInFlight: false }));
-		const m = model({ fetch, ackCheckMs: 10 });
-		assert.equal(await m.send({ type: "text", text: "hi" }), false);
-		assert.equal(m.getState().error?.message, SEND_LOST);
-	});
-
-	it("keeps waiting while the server says it holds the send (sendPending)", async () => {
-		const { fetch, checks } = heldPost((n) => Response.json({ messages: [], turnInFlight: false, compacting: false, sendPending: n < 4 }));
-		const m = model({ fetch, ackCheckMs: 10 });
-		assert.equal(await m.send({ type: "text", text: "hi" }), false);
-		assert.equal(m.getState().error?.message, SEND_LOST);
-		assert.equal(checks(), 6, "four held checks reset the count; two idle ones end it");
-	});
-
-	it("a 409 wait is not a verdict: a record that grows meanwhile is not this send landing", async () => {
-		// A wake turn holds the chat (409); its own messages land in the record
-		// while the identity-retry waits; then the re-POST is acknowledged.
-		let posts = 0, jobs = 0;
-		const fetch = (async (input: RequestInfo | URL) => {
-			const url = String(input);
-			if (url === "/api/chat") return ++posts === 1 ? new Response("busy", { status: 409 }) : Response.json({ ok: true });
-			if (url.startsWith("/api/jobs")) return Response.json({ turnInFlight: ++jobs < 8 });
-			if (url === "/api/chats/chat_x") return Response.json({ messages: [{ id: "w1", role: "user", content: "a steer", timestamp: 1 }, { id: "w2", role: "custom", customType: "lesson-notes", content: "n", timestamp: 2 }], turnInFlight: jobs < 8 });
+			if (url.startsWith("/api/chats/chat_x?send=")) { seen.checks++; return opts.check(seen.checks); }
+			if (url.startsWith("/api/jobs")) { seen.jobs++; return opts.jobs?.(seen.jobs) ?? held(init); }
+			if (url === "/api/chats/chat_x") return Response.json({ messages: [{ id: "u1", role: "user", content: "hi", timestamp: 1 }], turnInFlight: false });
 			if (url === "/api/chats/chat_x/stream") return sseResponse({ type: "turn-settled" }, "[DONE]");
 			throw new Error(`unexpected fetch: ${url}`);
 		}) as typeof globalThis.fetch;
+		return { fetch, seen };
+	}
+	const state = (send: string | null) => Response.json({ messages: [], send });
+
+	it("tags the POST with a send id and asks about that send", async () => {
+		const { fetch, seen } = server({ check: () => state(null) });
+		const m = model({ fetch, ackCheckMs: 10 });
+		await m.send({ type: "text", text: "hi" });
+		assert.match(seen.sendIds[0] ?? "", /^c_/);
+	});
+
+	it("calls a send lost only after the server confirms it cancelled it unseen", async () => {
+		const { fetch, seen } = server({ check: () => state(null) });
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().error?.message, SEND_LOST);
+		assert.equal(seen.checks, 2);
+		assert.equal(seen.cancels, 1);
+	});
+
+	it("a cancel that finds the send held keeps waiting; answered then attaches", async () => {
+		const { fetch, seen } = server({ check: (n) => state(n < 3 ? null : "answered"), cancel: () => Response.json({ state: "held" }) });
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), true);
+		assert.equal(m.getState().error, null);
+		assert.equal(seen.cancels, 1);
+	});
+
+	it("keeps waiting while the server holds the send", async () => {
+		const { fetch, seen } = server({ check: (n) => state(n < 5 ? "held" : null) });
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(seen.checks, 6, "four held checks, then two unseen");
+		assert.equal(m.getState().error?.message, SEND_LOST);
+	});
+
+	it("attaches as usual when the server answered it (accepted, only the ack lost)", async () => {
+		const { fetch, seen } = server({ check: () => state("answered") });
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), true);
+		assert.equal(m.getState().error, null);
+		assert.equal(seen.cancels, 0);
+	});
+
+	it("checks that cannot get through are no evidence: unconfirmed, never lost, nothing cancelled", async () => {
+		const { fetch, seen } = server({ check: () => { throw new TypeError("Failed to fetch"); } });
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().error?.message, SEND_UNCONFIRMED);
+		assert.equal(seen.cancels, 0);
+		assert.equal(seen.checks, 3);
+	});
+
+	it("a cancel that cannot get through is no evidence either", async () => {
+		const { fetch } = server({ check: () => state(null), cancel: () => { throw new TypeError("Failed to fetch"); } });
+		const m = model({ fetch, ackCheckMs: 10 });
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.equal(m.getState().error?.message, SEND_UNCONFIRMED);
+	});
+
+	it("a 409 wait is not a verdict, and the re-POST carries the same send id", async () => {
+		const { fetch, seen } = server({
+			post: (n) => n === 1 ? new Response("busy", { status: 409 }) : Response.json({ ok: true }),
+			jobs: (n) => Response.json({ turnInFlight: n < 8 }),
+			check: () => state(null),
+		});
 		const m = model({ fetch, ackCheckMs: 5, pollMs: 10, waitMaxMs: 5_000 });
 		assert.equal(await m.send({ type: "text", text: "hi" }), true);
-		assert.equal(posts, 2, "the re-POST went out: the wait was not cut short by a verdict");
+		assert.equal(seen.posts.length, 2);
+		assert.equal(seen.posts[0], seen.posts[1], "identity retry: the same body, the same send id");
+		assert.equal(seen.cancels, 0, "nothing cancelled while the server was answering 409");
 		assert.equal(m.getState().error, null);
 	});
 
 	it("a re-POST after a 409 wait is watched like the first", async () => {
-		let posts = 0, jobs = 0;
-		const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-			const url = String(input);
-			if (url === "/api/chat") {
-				if (++posts === 1) return new Response("busy", { status: 409 });
-				return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
-			}
-			if (url.startsWith("/api/jobs")) return Response.json({ turnInFlight: ++jobs < 4 });
-			if (url === "/api/chats/chat_x") return Response.json({ messages: [], turnInFlight: false, compacting: false });
-			throw new Error(`unexpected fetch: ${url}`);
-		}) as typeof globalThis.fetch;
+		const { fetch, seen } = server({
+			post: (n) => n === 1 ? new Response("busy", { status: 409 }) : undefined,
+			jobs: (n) => Response.json({ turnInFlight: n < 4 }),
+			check: () => state(null),
+		});
 		const m = model({ fetch, ackCheckMs: 10, pollMs: 10, waitMaxMs: 5_000 });
 		assert.equal(await m.send({ type: "text", text: "hi" }), false);
-		assert.equal(posts, 2);
+		assert.equal(seen.posts.length, 2);
 		assert.equal(m.getState().error?.message, SEND_LOST);
 	});
 
-	it("an answer counts as landed only by its own tool result", async () => {
-		const quiz = {
-			id: "a1", role: "assistant", stopReason: "toolUse", timestamp: 0, provider: "openrouter", model: "test",
-			usage: { input: 0, output: 0, total: 0, cacheReads: 0, cacheWrites: 0 },
-			content: [{ type: "toolCall", id: "call-1", name: "quiz", arguments: { question: "Q?", choices: ["a", "b"] } }],
-		} as unknown as LhMessage;
-		// The record grew (a marker landed) but holds no result for call-1: still lost.
-		const { fetch } = heldPost(() => Response.json({ messages: [quiz, { id: "m1", role: "custom", content: "note", timestamp: 1 }], turnInFlight: false }));
-		const m = model({ initialMessages: [quiz], fetch, ackCheckMs: 10 });
-		assert.equal(await m.send({ type: "answer", toolCallId: "call-1", answer: { correct: true } as never }), false);
-		assert.equal(m.getState().error?.message, SEND_LOST);
+	it("a turnInFlight poll that hangs cannot stall the 409 wait past its limit", async () => {
+		const { fetch, seen } = server({
+			post: () => new Response("busy", { status: 409 }),
+			jobs: () => undefined, // held: the poll never answers
+			check: () => state(null),
+		});
+		const m = model({ fetch, ackCheckMs: 1_000, pollMs: 10, waitMaxMs: 200, turnCheckMs: 30 });
+		const t0 = Date.now();
+		assert.equal(await m.send({ type: "text", text: "hi" }), false);
+		assert.ok(Date.now() - t0 < 1_000, "the wall-clock limit ended the wait");
+		assert.match(m.getState().error?.message ?? "", /already running/);
+		assert.ok(seen.jobs >= 1);
 	});
 });
