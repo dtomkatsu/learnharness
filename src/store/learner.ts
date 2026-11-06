@@ -19,7 +19,9 @@ const EXTERNAL = path.join(DIR, "external");
 /** Which terms the glossary tidy has already looked at. */
 const TIDY = path.join(DIR, "tidy.json");
 
-export interface CardFace { prompt: string; answer: string }
+/** One thing a card asks. `looksFor`: the 1–3 key points a good answer hits (the grader's rubric, shown after the answer);
+ *  `shape`: the form the answer takes ("One sentence", "Two things") — the cue under the question. Both absent on older cards. */
+export interface CardFace { prompt: string; answer: string; looksFor?: string[]; shape?: string }
 export interface Card {
 	itemId: ItemId;
 	/** The meaning the cards were written from (fills a term with no taught gloss). */
@@ -37,6 +39,8 @@ export interface Card {
 	example?: { sentence: string; translation: string };
 	/** Small fresh problems that USE the idea (compute, predict, decide) — asked in turn; [] when it cannot be applied. */
 	apply?: CardFace[];
+	/** Which version of the card-writing prompt wrote it (absent = 1): an older one is rewritten when next needed. */
+	promptVersion?: number;
 	/** Lapses when generated — regenerate elaboration/hook as they grow. */
 	lapsesAt: number;
 	generatedAt: string;

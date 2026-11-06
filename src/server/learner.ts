@@ -137,14 +137,32 @@ An item with "lang" is a WORD OF A LANGUAGE the learner is learning (lang is its
 - "example": ALWAYS — a short natural sentence in that language using the word ("sentence") and its English translation ("translation"). Use the one given if there is one; otherwise write an everyday one.
 - "cloze": the example sentence with the word replaced by "____" (prompt, followed by the English translation in brackets); answer = the word.
 
-Plain words; one idea per card; no answer may be guessable from its prompt. Reply with JSON only:
-{"cards":[{"id":"…","meaning":"…","recall":{"prompt":"…","answer":"…"},"produce":{…}?,"why":{…}?,"cloze":{…}?,"discriminate":{"prompt":"…","answer":"…","with":"…"}?,"elaboration":"…"?,"hook":"…"?,"example":{"sentence":"…","translation":"…"}?,"apply":[{"prompt":"…","answer":"…"}]}]}`;
+THE CRAFT OF AN OPEN PROMPT (recall, why, discriminate, apply — anything the learner answers in their own words):
+- ONE ask. Never "X, and Y?" or "…and why?" — the second half is another card. A prompt with two question marks, or "and what/how/why", is wrong.
+- BOUNDED. Name the case, the term or the quantity it is about, and what is asked of it. Never an open "what happens to…", "what do you know about…", "explain…" without a bound — ask for the one thing: its direction ("does it rise or fall, and by what rule?"), its name, its value, its reason.
+- Say the SHAPE of the answer, in "shape": "One sentence", "Two things", "A number with units", "A yes or no and the reason", "One example". The learner sees it under the prompt.
+- Write the model answer as the answer to THAT ask only, and put the 1–3 key points a good answer must hit in "looksFor" (short phrases, each checkable on its own; a one-fact answer has one). The grader marks against them: a point is hit when the learner says it in any words.
+- Test each prompt: could two reasonable learners answer different things and both be right? If so, narrow it.
+Bad: "In attention, what are the multiple heads, and what happens to their outputs?" Good: "In multi-head attention, what is done with the outputs of the separate heads before the next layer?" (shape "One sentence", looksFor ["they are concatenated", "then mixed by one more linear layer"]).
+Bad: "What happens to the meaning of a word like 'bank' as the other words in its sentence change?" Good: "A model reads 'river bank' and 'bank loan'. What does attention let the vector for 'bank' do differently in the two?" (shape "One sentence", looksFor ["it takes information from the neighbouring words", "so the two vectors differ"]).
+"tooVague" on an item lists prompts the learner found too vague: write replacements that are narrower, and do not reuse their wording.
+
+Plain words; one idea per card; no answer may be guessable from its prompt. Reply with JSON only (faces other than cloze, produce and apply's may carry "shape" and "looksFor"):
+{"cards":[{"id":"…","meaning":"…","recall":{"prompt":"…","answer":"…","shape":"…","looksFor":["…"]},"produce":{…}?,"why":{…}?,"cloze":{…}?,"discriminate":{"prompt":"…","answer":"…","with":"…","shape":"…","looksFor":["…"]}?,"elaboration":"…"?,"hook":"…"?,"example":{"sentence":"…","translation":"…"}?,"apply":[{"prompt":"…","answer":"…","shape":"…","looksFor":["…"]}]}]}`;
+
+/** Version of the card-writing prompt: a card written under an older one is rewritten when it is next needed. */
+export const CARD_PROMPT_VERSION = 2;
 
 function jsonOf(text: string): any {
 	const m = /\{[\s\S]*\}/.exec(text); if (!m) return null;
 	try { return JSON.parse(m[0]); } catch { return null; }
 }
-const face = (x: any): CardFace | undefined => (x && typeof x.prompt === "string" && typeof x.answer === "string" && x.prompt.trim() && x.answer.trim() ? { prompt: x.prompt.trim(), answer: x.answer.trim() } : undefined);
+const face = (x: any): CardFace | undefined => {
+	if (!(x && typeof x.prompt === "string" && typeof x.answer === "string" && x.prompt.trim() && x.answer.trim())) return undefined;
+	const looksFor = (Array.isArray(x.looksFor) ? x.looksFor : []).filter((p: unknown): p is string => typeof p === "string" && !!p.trim()).map((p: string) => p.trim().slice(0, 200)).slice(0, 4);
+	const shape = typeof x.shape === "string" && x.shape.trim() ? x.shape.trim().slice(0, 60) : "";
+	return { prompt: x.prompt.trim(), answer: x.answer.trim(), ...(looksFor.length ? { looksFor } : {}), ...(shape ? { shape } : {}) };
+};
 
 /** The card an item can always be asked with, model or not. */
 export function fallbackCard(it: ItemState): Card {
@@ -175,11 +193,12 @@ export function cardsNeeded(state: LearnerState, ids: readonly ItemId[], cards =
 		if (!c || c.generatedAt === new Date(0).toISOString()) return true;
 		if (it.lang && (!c.produce || !c.example)) return true;
 		if (!it.lang && c.apply === undefined) return true;   // written before use-it problems existed
+		if (!it.lang && (c.promptVersion ?? 1) < CARD_PROMPT_VERSION) return true;   // written before open prompts had to be one bounded ask with its key points
 		return (it.lapses >= 2 && !c.elaboration) || (it.lapses >= 3 && !c.hook) || (it.misconceptions.length > 0 && !c.discriminate);
 	});
 }
 
-export async function generateCards(deps: LearnerDeps, state: LearnerState, ids: readonly ItemId[], engine: PiEngine, context: (it: ItemState) => string = () => ""): Promise<ItemId[]> {
+export async function generateCards(deps: LearnerDeps, state: LearnerState, ids: readonly ItemId[], engine: PiEngine, context: (it: ItemState) => string = () => "", tooVague: Record<ItemId, string[]> = {}): Promise<ItemId[]> {
 	const items = ids.map((id) => state.items.get(id)).filter((x): x is ItemState => !!x).slice(0, 10);
 	if (!items.length) return [];
 	const lines = items.map((it) => JSON.stringify({
@@ -187,6 +206,7 @@ export async function generateCards(deps: LearnerDeps, state: LearnerState, ids:
 		...(it.example ? { example: { sentence: it.example, translation: it.exampleEn ?? "" } } : {}),
 		premises: it.premises.map((p) => state.items.get(p)).filter(Boolean).map((p) => `${p!.label}: ${p!.meaning}`),
 		wrongBeliefs: it.misconceptions.map((m) => m.belief), lapses: it.lapses,
+		...(tooVague[it.id]?.length ? { tooVague: tooVague[it.id] } : {}),
 		context: context(it).slice(0, 1500),
 	}));
 	const { text } = await runSubagent([], { role: "auditor", engine, systemPrompt: CARD_PROMPT, prompt: "ITEMS:\n" + lines.join("\n"), maxTurns: 1 });
@@ -206,7 +226,7 @@ export async function generateCards(deps: LearnerDeps, state: LearnerState, ids:
 			...(typeof c.hook === "string" && c.hook.trim() ? { hook: c.hook.trim() } : cards[it.id]?.hook ? { hook: cards[it.id]!.hook } : {}),
 			apply: (Array.isArray(c.apply) ? c.apply : []).map(face).filter((f: CardFace | undefined): f is CardFace => !!f).slice(0, 3),
 			...(c.example && typeof c.example.sentence === "string" && c.example.sentence.trim() ? { example: { sentence: c.example.sentence.trim(), translation: String(c.example.translation ?? "").trim() } } : it.example ? { example: { sentence: it.example, translation: it.exampleEn ?? "" } } : {}),
-			lapsesAt: it.lapses, generatedAt: new Date().toISOString(),
+			promptVersion: CARD_PROMPT_VERSION, lapsesAt: it.lapses, generatedAt: new Date().toISOString(),
 		};
 		written.push(it.id);
 	}
@@ -220,7 +240,12 @@ const GRADE_PROMPT = `You grade one answer in a learner's spaced-repetition revi
 
 You get the card's prompt, the expected answer, and what the learner wrote (their own words, possibly handwriting read by a machine — ignore spelling and recognition slips).
 
-Rate it:
+When LOOKS FOR is given, it is the rubric: a point is hit when the learner says it in any words (a synonym, a paraphrase, a correct example of it). Rate by the points hit, not by how closely the wording follows EXPECTED:
+4 = every point hit, nothing wrong added.
+3 = the core point hit (or all but a minor one) and nothing wrong.
+2 = some of the points hit, or all hit with something wrong or muddled alongside.
+1 = no point hit, wrong, empty, or "don't know".
+Without LOOKS FOR, rate against EXPECTED:
 4 = right and complete, precise.
 3 = right in substance, in their own words; small omissions fine.
 2 = partly right — the core is there but something important is missing or muddled.
@@ -228,20 +253,21 @@ Rate it:
 
 If the answer states a SPECIFIC wrong belief (not just a blank or a vague answer), give it in "belief" as one short sentence in the learner's terms; otherwise omit "belief".
 
-Reply with JSON only: {"rating":1|2|3|4,"reason":"one short sentence the learner will read","belief":"…"?}`;
+Reply with JSON only: {"rating":1|2|3|4,"reason":"one short sentence the learner will read, naming what was missed","hit":[0-based indexes of the LOOKS FOR points that were hit]?,"belief":"…"?}`;
 
-export interface GradeResult { rating: Rating; reason: string; belief?: string }
+export interface GradeResult { rating: Rating; reason: string; belief?: string; hit?: number[] }
 
 export async function gradeAnswer(face: CardFace, response: string, engine: PiEngine): Promise<GradeResult> {
 	if (!response.trim()) return { rating: 1, reason: "No answer given." };
 	const { text } = await runSubagent([], {
 		role: "auditor", engine, systemPrompt: GRADE_PROMPT, maxTurns: 1,
-		prompt: `PROMPT: ${face.prompt}\nEXPECTED: ${face.answer}\nLEARNER WROTE: ${response.slice(0, 2000)}`,
+		prompt: `PROMPT: ${face.prompt}\nEXPECTED: ${face.answer}\n${face.looksFor?.length ? `LOOKS FOR:\n${face.looksFor.map((p, i) => `${i}. ${p}`).join("\n")}\n` : ""}LEARNER WROTE: ${response.slice(0, 2000)}`,
 	});
 	const j = jsonOf(text);
 	const r = Number(j?.rating);
 	if (![1, 2, 3, 4].includes(r)) throw new Error("the grader's reply could not be read");
-	return { rating: r as Rating, reason: String(j.reason ?? "").slice(0, 300), ...(typeof j.belief === "string" && j.belief.trim() ? { belief: j.belief.trim().slice(0, 300) } : {}) };
+	const hit = face.looksFor?.length && Array.isArray(j.hit) ? [...new Set(j.hit.map(Number).filter((n: number) => Number.isInteger(n) && n >= 0 && n < face.looksFor!.length))] as number[] : undefined;
+	return { rating: r as Rating, reason: String(j.reason ?? "").slice(0, 300), ...(hit ? { hit } : {}), ...(typeof j.belief === "string" && j.belief.trim() ? { belief: j.belief.trim().slice(0, 300) } : {}) };
 }
 
 /** Records a review; a model belief becomes a misconception on the item. */
@@ -290,6 +316,7 @@ export function queueView(state: LearnerState, opts: { limit?: number; only?: Se
 		const f = cardFace(c, q.mode, it);
 		return {
 			...q, mode: f.mode, label: it.label, kind: it.kind, prompt: f.prompt, answer: f.answer, ...(f.speak ? { speak: f.speak } : {}),
+			...(f.shape ? { shape: f.shape } : {}), ...(f.looksFor?.length ? { looksFor: f.looksFor } : {}),
 			...(it.lang ? { lang: it.lang } : {}), ...(it.audio ? { audio: it.audio } : {}), ...(it.deck ? { deck: it.deck } : {}),
 			...(c.example ? { example: c.example } : {}),
 			...((n) => (n ? { note: n } : {}))(noteFor(state, q.itemId)),

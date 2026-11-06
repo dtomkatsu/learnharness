@@ -84,7 +84,10 @@ export type LearnerEvent =
 	/** A term used with a different meaning than the one taught. */
 	| (EventBase & { kind: "drift"; itemId: ItemId; term: string; taughtAs: string; nowAs: string; chatId: string })
 	/** The learner took an item out of review (or put it back). */
-	| (EventBase & { kind: "suspend"; itemId: ItemId; on: boolean });
+	| (EventBase & { kind: "suspend"; itemId: ItemId; on: boolean })
+	/** The learner found a question too vague: a review card's prompt (`itemId`, `mode`) or a tutor question (`chatId`, `toolCallId`).
+	 *  Derives nothing — it is the record of the complaint (the card is rewritten at once; the tutor was told in the lesson). */
+	| (EventBase & { kind: "vague"; prompt: string; itemId?: ItemId; mode?: ReviewMode; chatId?: string; toolCallId?: string });
 
 export type LearnerEventKind = LearnerEvent["kind"];
 

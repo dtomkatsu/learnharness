@@ -43,11 +43,11 @@ export async function POST(req: Request) {
 	const card = readCards()[itemId] ?? fallbackCard(it);
 	const face = cardFace(card, mode, it);
 	const response = typeof body.response === "string" ? body.response : "";
-	let rating = Number(body.rating), reason = "", belief: string | undefined, graded: "model" | "self" = "self";
+	let rating = Number(body.rating), reason = "", belief: string | undefined, hit: number[] | undefined, graded: "model" | "self" = "self";
 	if (![1, 2, 3, 4].includes(rating)) {
 		const engine = learnerEngine(false);
 		if (!engine) return Response.json({ error: "No model is set for grading (the cheap slot) — grade it yourself.", answer: face.answer }, { status: 503 });
-		try { const g = await gradeAnswer(face, response, engine); rating = g.rating; reason = g.reason; belief = g.belief; graded = "model"; }
+		try { const g = await gradeAnswer(face, response, engine); rating = g.rating; reason = g.reason; belief = g.belief; hit = g.hit; graded = "model"; }
 		catch (err) { return Response.json({ error: String((err as Error).message ?? err), answer: face.answer }, { status: 502 }); }
 	}
 	const confidence = typeof body.confidence === "number" ? body.confidence : undefined;
@@ -55,7 +55,7 @@ export async function POST(req: Request) {
 	const after = learnerState(stores).items.get(itemId)!;
 	const sched = mode === "produce" && after.produce ? after.produce : after.schedule;
 	return Response.json({
-		eventId: ev!.id, rating, graded, reason, answer: face.answer, ...(belief && rating <= 2 ? { belief } : {}),
+		eventId: ev!.id, rating, graded, reason, answer: face.answer, ...(face.looksFor?.length ? { looksFor: face.looksFor, ...(hit ? { hit } : {}) } : {}), ...(belief && rating <= 2 ? { belief } : {}),
 		next: { due: new Date(sched.due).toISOString(), days: Math.max(0, Math.round((sched.due - Date.now()) / 86400000)), retrievability: retrievability(sched, Date.now()) },
 		status: after.status,
 		...(after.lapses >= 2 && card.elaboration ? { elaboration: card.elaboration } : {}),
