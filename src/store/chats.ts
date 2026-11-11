@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
-import type { ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, ImageSnapshot, PlanTree, SideChatThread, TurnUsage } from "../core/contracts.ts";
+import type { ChatCourse, ChatParent, ChatRecord, LessonVocabulary, ChatSettings, ChatSummary, ExtractionRunUsage, ImageSnapshot, PlanTree, SideChatThread, TurnUsage } from "../core/contracts.ts";
 import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";

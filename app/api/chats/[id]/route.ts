@@ -1,4 +1,4 @@
-import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver } from "@/src/server";
+import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sendPending, sendState, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver } from "@/src/server";
 import { pendingPluginQuestionOf, activeProblemOf } from "@/src/core";
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {

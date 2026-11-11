@@ -488,6 +488,9 @@ function projectMarker(marker: LhMarkerMessage, out: LhViewMessage[]): void {
 			});
 			return;
 		}
+		case "lesson-notes":
+			// Model-facing only (the vocabulary check's notes to the teacher).
+			return;
 		case "side-question":
 		case "side-question-told":
 			// Raw context entries do not split the teaching segment or render

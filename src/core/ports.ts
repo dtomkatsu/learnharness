@@ -17,6 +17,7 @@ import type {
 	ChatParent,
 	ChatRecord,
 	ImageSnapshot,
+	LessonVocabulary,
 	ChatSettings,
 	ChatSummary,
 	GraphChain,
