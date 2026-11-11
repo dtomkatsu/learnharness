@@ -19,9 +19,15 @@ export const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // Mutable runtime paths are not deployment assets. Turbopack analyzes each
 // path-producing call independently, so derived paths need their own opt-out.
 // Keep ROOT/teacherPrompt traceable: read-only shipped assets still belong.
+// Tests never touch the real data/ (2026-11): several suites write chats, jobs and
+// settings without setting LH_DATA_DIR, and a full run left dozens of fixture
+// chats in a real learner's library. Under NODE_ENV=test with no LH_DATA_DIR,
+// each process gets its own scratch folder instead.
 const DATA_ROOT = process.env.LH_DATA_DIR
 	? path.resolve(/* turbopackIgnore: true */ process.env.LH_DATA_DIR)
-	: path.join(/* turbopackIgnore: true */ ROOT, "data");
+	: process.env.NODE_ENV === "test"
+		? fs.mkdtempSync(path.join(/* turbopackIgnore: true */ os.tmpdir(), "lh-test-data-"))
+		: path.join(/* turbopackIgnore: true */ ROOT, "data");
 
 export const PATHS = {
 	root: ROOT,

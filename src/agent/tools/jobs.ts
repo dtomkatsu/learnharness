@@ -174,7 +174,7 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			execute: serverExecute("visual", visualInputSchema, async (input, { toolCallId, signal }) => {
 				if (!ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId) && input.image !== undefined) await checkLearnerImage(input.image);
 				signal?.throwIfAborted();
-				return dispatch(ctx, "visual", toolCallId, VISUAL_ACK, input);
+				return dispatch(ctx, "visual", toolCallId, VISUAL_ACK, { ...input, brief: input.brief + (ctx.vocabulary?.() ?? "") });
 			}),
 		},
 		pdf: {
