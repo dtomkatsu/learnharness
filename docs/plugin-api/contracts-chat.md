@@ -5,18 +5,24 @@
 [API index](README.md) · [Data access and host boundaries](../plugin-authoring.md#backend-and-data)
 
 - [CallUsage](#callusage) — supporting declaration
+- [ChatCourse](#chatcourse) — supporting declaration
 - [ChatKind](#chatkind) — supporting declaration
 - [ChatListItem](#chatlistitem)
+- [ChatParent](#chatparent) — supporting declaration
 - [ChatRecord](#chatrecord)
 - [ChatSettings](#chatsettings) — supporting declaration
 - [ChatSummary](#chatsummary) — supporting declaration
 - [ExtractionRunUsage](#extractionrunusage) — supporting declaration
 - [ExtractionStageUsage](#extractionstageusage) — supporting declaration
 - [ImageSnapshot](#imagesnapshot) — supporting declaration
+- [LessonVocabulary](#lessonvocabulary) — supporting declaration
 - [SideChatAnchor](#sidechatanchor) — supporting declaration
 - [SideChatMessage](#sidechatmessage) — supporting declaration
 - [SideChatThread](#sidechatthread) — supporting declaration
 - [TurnUsage](#turnusage) — supporting declaration
+- [VocabFlag](#vocabflag) — supporting declaration
+- [VocabSideQuestion](#vocabsidequestion) — supporting declaration
+- [VocabTerm](#vocabterm) — supporting declaration
 
 ## CallUsage
 
@@ -92,6 +98,36 @@ The reasoning portion of the output tokens.
 reasoningTokens: number | undefined;
 ```
 
+## ChatCourse
+
+Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
+
+A lesson of a course (2026-11): the course and which of its lessons this chat is.
+
+```ts
+export interface ChatCourse {
+    id: string;
+    lessonId: string;
+}
+```
+
+**Member index** (including nested object members; inherited members are defined in the linked base types):
+
+- [id](#chatcourse-id)
+- [lessonId](#chatcourse-lessonid)
+
+### ChatCourse id
+
+```ts
+id: string;
+```
+
+### ChatCourse lessonId
+
+```ts
+lessonId: string;
+```
+
 ## ChatKind
 
 Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
@@ -141,6 +177,45 @@ Supplied by the live compaction registry, not by saved compaction markers.
 compacting: boolean;
 ```
 
+## ChatParent
+
+Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
+
+A side thread (2026-11): a question asked about a term in another session —
+"define this", "go deeper on this" — is a session of its own that
+remembers whose it is, so a list can show it indented under that session
+instead of as a subject by itself. Set once, at creation; absent = a
+session in its own right. A parent deleted later leaves the link
+dangling, and the list then shows the thread at the top level.
+
+```ts
+export interface ChatParent {
+    id: string;
+    term?: string;
+}
+```
+
+**Member index** (including nested object members; inherited members are defined in the linked base types):
+
+- [id](#chatparent-id)
+- [term](#chatparent-term)
+
+### ChatParent id
+
+The session it was asked from.
+
+```ts
+id: string;
+```
+
+### ChatParent term
+
+The words it was asked about, as marked (may be empty).
+
+```ts
+term?: string;
+```
+
 ## ChatRecord
 
 Public SDK type, exported as `ChatRecord`. Import with `import type`; the SDK has no runtime exports.
@@ -158,6 +233,9 @@ export interface ChatRecord {
     messages: LhMessage[];
     imageSnapshots?: Record<string, ImageSnapshot>;
     kind?: ChatKind;
+    parent?: ChatParent;
+    course?: ChatCourse;
+    vocabulary?: LessonVocabulary;
     tree?: PlanTree;
     turns?: TurnUsage[];
     extractions?: ExtractionRunUsage[];
@@ -167,7 +245,7 @@ export interface ChatRecord {
 }
 ```
 
-**Related types:** [ChatKind](contracts-chat.md#chatkind), [ChatSettings](contracts-chat.md#chatsettings), [ExtractionRunUsage](contracts-chat.md#extractionrunusage), [ImageSnapshot](contracts-chat.md#imagesnapshot), [LhMessage](native-messages.md#lhmessage), [PlanTree](contracts-plan.md#plantree), [SideChatThread](contracts-chat.md#sidechatthread), [TurnUsage](contracts-chat.md#turnusage).
+**Related types:** [ChatCourse](contracts-chat.md#chatcourse), [ChatKind](contracts-chat.md#chatkind), [ChatParent](contracts-chat.md#chatparent), [ChatSettings](contracts-chat.md#chatsettings), [ExtractionRunUsage](contracts-chat.md#extractionrunusage), [ImageSnapshot](contracts-chat.md#imagesnapshot), [LessonVocabulary](contracts-chat.md#lessonvocabulary), [LhMessage](native-messages.md#lhmessage), [PlanTree](contracts-plan.md#plantree), [SideChatThread](contracts-chat.md#sidechatthread), [TurnUsage](contracts-chat.md#turnusage).
 
 **Member index** (including nested object members; inherited members are defined in the linked base types):
 
@@ -178,6 +256,9 @@ export interface ChatRecord {
 - [messages](#chatrecord-messages)
 - [imageSnapshots](#chatrecord-imagesnapshots)
 - [kind](#chatrecord-kind)
+- [parent](#chatrecord-parent)
+- [course](#chatrecord-course)
+- [vocabulary](#chatrecord-vocabulary)
 - [tree](#chatrecord-tree)
 - [turns](#chatrecord-turns)
 - [extractions](#chatrecord-extractions)
@@ -229,6 +310,30 @@ The session's kind; an absent field reads as teach.
 
 ```ts
 kind?: ChatKind;
+```
+
+### ChatRecord parent
+
+A side thread's session of origin (absent = top level).
+
+```ts
+parent?: ChatParent;
+```
+
+### ChatRecord course
+
+```ts
+course?: ChatCourse;
+```
+
+### ChatRecord vocabulary
+
+The lesson's vocabulary ledger (2026-11): what has been taught, what the
+plan says each node introduces and needs, and terms used before they
+were taught — see core/vocabulary.ts. Absent = nothing recorded yet.
+
+```ts
+vocabulary?: LessonVocabulary;
 ```
 
 ### ChatRecord tree
@@ -362,6 +467,8 @@ export interface ChatSummary {
     createdAt: string;
     updatedAt: string;
     kind: ChatKind;
+    parent?: ChatParent;
+    course?: ChatCourse;
     messageCount: number;
     phase: Phase3;
     pendingQuestion: boolean;
@@ -370,7 +477,7 @@ export interface ChatSummary {
 }
 ```
 
-**Related types:** [ChatKind](contracts-chat.md#chatkind), [ChatSettings](contracts-chat.md#chatsettings), [Phase3](phases.md#phase3).
+**Related types:** [ChatCourse](contracts-chat.md#chatcourse), [ChatKind](contracts-chat.md#chatkind), [ChatParent](contracts-chat.md#chatparent), [ChatSettings](contracts-chat.md#chatsettings), [Phase3](phases.md#phase3).
 
 **Member index** (including nested object members; inherited members are defined in the linked base types):
 
@@ -379,6 +486,8 @@ export interface ChatSummary {
 - [createdAt](#chatsummary-createdat)
 - [updatedAt](#chatsummary-updatedat)
 - [kind](#chatsummary-kind)
+- [parent](#chatsummary-parent)
+- [course](#chatsummary-course)
 - [messageCount](#chatsummary-messagecount)
 - [phase](#chatsummary-phase)
 - [pendingQuestion](#chatsummary-pendingquestion)
@@ -415,6 +524,20 @@ Normalized kind (absent record field reads as teach).
 
 ```ts
 kind: ChatKind;
+```
+
+### ChatSummary parent
+
+A side thread's session of origin (absent = top level).
+
+```ts
+parent?: ChatParent;
+```
+
+### ChatSummary course
+
+```ts
+course?: ChatCourse;
 ```
 
 ### ChatSummary messageCount
@@ -623,6 +746,190 @@ width: number;
 
 ```ts
 height: number;
+```
+
+## LessonVocabulary
+
+Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
+
+The lesson's vocabulary ledger (2026-11): the remedy for concepts used
+before they are taught. Written by plan_init (planned/known), the
+after-turn vocabulary check (terms, flags) and side-question creation
+(sideQuestions); flags and side questions are handed to the teacher as a
+lesson-notes marker at the start of its next turn, then cleared.
+
+```ts
+export interface LessonVocabulary {
+    terms: VocabTerm[];
+    planned?: Record<string, {
+        introduces: string[];
+        needs: string[];
+    }>;
+    flagged: VocabFlag[];
+    sideQuestions: VocabSideQuestion[];
+    checkedThrough?: string;
+    checkedAt?: string;
+    profiled?: boolean;
+    noteTurns?: number;
+    notedLeeches?: string[];
+    notedUnchecked?: string[];
+    notedDrift?: string[];
+    notedReturn?: string;
+    recap?: {
+        through: string;
+        text: string;
+    };
+    notedRecheck?: Record<string, string>;
+    notedConfident?: string[];
+}
+```
+
+**Related types:** [VocabFlag](contracts-chat.md#vocabflag), [VocabSideQuestion](contracts-chat.md#vocabsidequestion), [VocabTerm](contracts-chat.md#vocabterm).
+
+**Member index** (including nested object members; inherited members are defined in the linked base types):
+
+- [terms](#lessonvocabulary-terms)
+- [planned](#lessonvocabulary-planned)
+- [flagged](#lessonvocabulary-flagged)
+- [sideQuestions](#lessonvocabulary-sidequestions)
+- [checkedThrough](#lessonvocabulary-checkedthrough)
+- [checkedAt](#lessonvocabulary-checkedat)
+- [profiled](#lessonvocabulary-profiled)
+- [noteTurns](#lessonvocabulary-noteturns)
+- [notedLeeches](#lessonvocabulary-notedleeches)
+- [notedUnchecked](#lessonvocabulary-notedunchecked)
+- [notedDrift](#lessonvocabulary-noteddrift)
+- [notedReturn](#lessonvocabulary-notedreturn)
+- [recap](#lessonvocabulary-recap)
+- [recap.through](#lessonvocabulary-recapthrough)
+- [recap.text](#lessonvocabulary-recaptext)
+- [notedRecheck](#lessonvocabulary-notedrecheck)
+- [notedConfident](#lessonvocabulary-notedconfident)
+
+### LessonVocabulary terms
+
+```ts
+terms: VocabTerm[];
+```
+
+### LessonVocabulary planned
+
+plan_init's declaration: per node, the terms it introduces and needs.
+
+```ts
+planned?: Record<string, {
+    introduces: string[];
+    needs: string[];
+}>;
+```
+
+### LessonVocabulary flagged
+
+```ts
+flagged: VocabFlag[];
+```
+
+### LessonVocabulary sideQuestions
+
+```ts
+sideQuestions: VocabSideQuestion[];
+```
+
+### LessonVocabulary checkedThrough
+
+The newest assistant message the check has read.
+
+```ts
+checkedThrough?: string;
+```
+
+### LessonVocabulary checkedAt
+
+When the check last ran (answers after it are new to it).
+
+```ts
+checkedAt?: string;
+```
+
+### LessonVocabulary profiled
+
+Learner-model notes already handed over (2026-11): the profile (once per
+lesson), the teaching-turn count (due items every 4th), leeches, plan
+nodes whose unchecked ancestors were named, drift events named.
+
+```ts
+profiled?: boolean;
+```
+
+### LessonVocabulary noteTurns
+
+```ts
+noteTurns?: number;
+```
+
+### LessonVocabulary notedLeeches
+
+```ts
+notedLeeches?: string[];
+```
+
+### LessonVocabulary notedUnchecked
+
+```ts
+notedUnchecked?: string[];
+```
+
+### LessonVocabulary notedDrift
+
+```ts
+notedDrift?: string[];
+```
+
+### LessonVocabulary notedReturn
+
+The last message a "returning after a gap" note was given for.
+
+```ts
+notedReturn?: string;
+```
+
+### LessonVocabulary recap
+
+The learner-facing recap of where the lesson left off, and the message it was written through.
+
+```ts
+recap?: {
+    through: string;
+    text: string;
+};
+```
+
+### LessonVocabulary recap.through
+
+```ts
+through: string;
+```
+
+### LessonVocabulary recap.text
+
+```ts
+text: string;
+```
+
+### LessonVocabulary notedRecheck
+
+Plan nodes the tutor was asked to re-check, with when (once a day each).
+
+```ts
+notedRecheck?: Record<string, string>;
+```
+
+### LessonVocabulary notedConfident
+
+Confident misses already named to the tutor (answer tool-call ids).
+
+```ts
+notedConfident?: string[];
 ```
 
 ## SideChatAnchor
@@ -943,4 +1250,151 @@ One entry per agent step (model call) in this turn.
 
 ```ts
 steps: CallUsage[];
+```
+
+## VocabFlag
+
+Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
+
+A term the lesson used before teaching it, waiting to reach the teacher.
+
+```ts
+export interface VocabFlag {
+    term: string;
+    where: string;
+    messageId?: string;
+    at: string;
+}
+```
+
+**Member index** (including nested object members; inherited members are defined in the linked base types):
+
+- [term](#vocabflag-term)
+- [where](#vocabflag-where)
+- [messageId](#vocabflag-messageid)
+- [at](#vocabflag-at)
+
+### VocabFlag term
+
+```ts
+term: string;
+```
+
+### VocabFlag where
+
+Why the checker flagged it — where it appeared.
+
+```ts
+where: string;
+```
+
+### VocabFlag messageId
+
+```ts
+messageId?: string;
+```
+
+### VocabFlag at
+
+```ts
+at: string;
+```
+
+## VocabSideQuestion
+
+Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
+
+A side question asked from this lesson, waiting to reach the teacher.
+
+```ts
+export interface VocabSideQuestion {
+    chatId: string;
+    term: string;
+    at: string;
+}
+```
+
+**Member index** (including nested object members; inherited members are defined in the linked base types):
+
+- [chatId](#vocabsidequestion-chatid)
+- [term](#vocabsidequestion-term)
+- [at](#vocabsidequestion-at)
+
+### VocabSideQuestion chatId
+
+```ts
+chatId: string;
+```
+
+### VocabSideQuestion term
+
+```ts
+term: string;
+```
+
+### VocabSideQuestion at
+
+```ts
+at: string;
+```
+
+## VocabTerm
+
+Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
+
+One term in a lesson's vocabulary ledger.
+
+```ts
+export interface VocabTerm {
+    term: string;
+    gloss: string;
+    source: "taught" | "known";
+    messageId?: string;
+    at: string;
+}
+```
+
+**Member index** (including nested object members; inherited members are defined in the linked base types):
+
+- [term](#vocabterm-term)
+- [gloss](#vocabterm-gloss)
+- [source](#vocabterm-source)
+- [messageId](#vocabterm-messageid)
+- [at](#vocabterm-at)
+
+### VocabTerm term
+
+```ts
+term: string;
+```
+
+### VocabTerm gloss
+
+A plain one-line meaning, as taught (empty for terms the learner brought).
+
+```ts
+gloss: string;
+```
+
+### VocabTerm source
+
+taught = the lesson introduced it; known = the learner already held it
+(the plan's `known`, or the learner used it first).
+
+```ts
+source: "taught" | "known";
+```
+
+### VocabTerm messageId
+
+The message that taught it (absent for known terms).
+
+```ts
+messageId?: string;
+```
+
+### VocabTerm at
+
+```ts
+at: string;
 ```

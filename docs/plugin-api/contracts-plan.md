@@ -56,6 +56,7 @@ export interface PlanNode {
     id: string;
     title: string;
     summary?: string;
+    minutes?: number;
 }
 ```
 
@@ -64,6 +65,7 @@ export interface PlanNode {
 - [id](#plannode-id)
 - [title](#plannode-title)
 - [summary](#plannode-summary)
+- [minutes](#plannode-minutes)
 
 ### PlanNode id
 
@@ -83,10 +85,18 @@ title: string;
 
 ### PlanNode summary
 
-1-2 sentences: what this node covers.
+1-2 sentences: what this node covers — or, when plan_init gave `steps`, what the learner can do after it ("you can …").
 
 ```ts
 summary?: string;
+```
+
+### PlanNode minutes
+
+A rough time for the step in minutes (plan_init's `steps`): the page sums what is left.
+
+```ts
+minutes?: number;
 ```
 
 ## PlanTree
