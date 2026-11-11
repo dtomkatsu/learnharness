@@ -24,7 +24,7 @@ import { afterEach, describe, it } from "node:test";
 import { absorbed, pendingCallTool, SEND_LOST, SEND_UNCONFIRMED, SessionModel } from "../components/session-core.ts";
 import type { ChatInput } from "../src/core/input-events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
-import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
+import { newMessageId, newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
 import { endsInFailedTurn, newCompactionMarker, newPlanBlockMessage, projectView } from "../src/core/index.ts";
 import { buildProbeHandoffSteer, buildSubagentSteer } from "../src/core/contracts/jobs.ts";
 import { dismissedAnswer } from "../src/core/question-core.ts";
@@ -2034,5 +2034,92 @@ describe("send's no-ack watchdog (a POST the server never acknowledges)", () => 
 		assert.ok(Date.now() - t0 < 1_000, "the wall-clock limit ended the wait");
 		assert.match(m.getState().error?.message ?? "", /already running/);
 		assert.ok(seen.jobs >= 1);
+	});
+});
+
+// ─── a page that is not a secure context (2026-11-10) ───────────────────────
+//
+// Opened as http://madisons-mac-mini:3010 — plain http on a name that is not
+// localhost — the page is not a secure context, and crypto.randomUUID is
+// undefined there. send() flips to submitted and then minted the optimistic
+// message's id: it threw before the POST, so the learner's answer sat on
+// Thinking… for good and the server, never asked, logged nothing. The phone
+// reaches the app over https and never met it.
+
+/** Run `fn` as a plain-http page sees the world: a crypto without randomUUID
+ *  (or, with `bare`, no crypto at all). */
+async function withoutRandomUUID<T>(fn: () => T | Promise<T>, bare = false): Promise<T> {
+	const original = Object.getOwnPropertyDescriptor(globalThis, "crypto")!;
+	const real = globalThis.crypto;
+	Object.defineProperty(globalThis, "crypto", {
+		configurable: true,
+		value: bare ? undefined : { getRandomValues: (a: ArrayBufferView) => real.getRandomValues(a) },
+	});
+	try { return await fn(); }
+	finally { Object.defineProperty(globalThis, "crypto", original); }
+}
+
+describe("a page with no crypto.randomUUID (plain http is not a secure context)", () => {
+	it("mints message ids of the usual shape, none repeated", async () => {
+		await withoutRandomUUID(() => {
+			const ids = Array.from({ length: 500 }, () => newMessageId());
+			assert.equal(new Set(ids).size, ids.length);
+			for (const id of ids) assert.match(id, /^msg_[0-9a-z]+_[0-9a-f]{8}$/);
+		});
+	});
+
+	it("mints them with no crypto object at all", async () => {
+		await withoutRandomUUID(() => {
+			assert.match(newMessageId(), /^msg_[0-9a-z]+_[0-9a-f]{8}$/);
+			assert.match(newPlanBlockMessage("plan-1", {}).id, /^pb_[0-9a-z]+_[0-9a-f]{8}$/);
+		}, true);
+	});
+
+	it("an answer still goes out: its POST is sent and the turn attaches", async () => {
+		const posts: string[] = [];
+		globalThis.fetch = dietFetch({
+			onPost: (b) => posts.push(b),
+			userText: "hi",
+			stream: () => sseResponse({ type: "turn-settled" }, "[DONE]"),
+		});
+		// The record comes from the server (its ids are server-minted); only the
+		// optimistic answer is minted in the page.
+		const quizCall = {
+			id: "call-1",
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Q?" },
+				{ type: "toolCall", id: "call-1", name: "quiz", arguments: { question: "Q?", choices: ["a", "b"] } },
+			],
+			stopReason: "toolUse",
+			usage: { input: 0, output: 0, total: 0, cacheReads: 0, cacheWrites: 0 },
+			provider: "openrouter",
+			model: "test",
+			timestamp: 0,
+		} as unknown as LhMessage;
+		const initialMessages = [newUserMessage("hi"), quizCall];
+		await withoutRandomUUID(async () => {
+			const m = model({ initialMessages });
+			await m.submitAnswer("quiz", "call-1", { correct: true } as never);
+			assert.equal(posts.length, 1, "the answer reached the wire");
+			assert.deepEqual(JSON.parse(posts[0]!).input, { type: "answer", toolCallId: "call-1", answer: { correct: true } });
+			assert.equal(m.getState().error, null);
+			assert.equal(m.getState().status, "ready", "not left on Thinking…");
+		});
+	});
+
+	it("a typed message goes out too", async () => {
+		const posts: string[] = [];
+		globalThis.fetch = dietFetch({
+			onPost: (b) => posts.push(b),
+			userText: "my topic",
+			stream: () => sseResponse({ type: "turn-settled" }, "[DONE]"),
+		});
+		await withoutRandomUUID(async () => {
+			const m = model();
+			assert.equal(await m.send({ type: "text", text: "my topic" }), true);
+			assert.equal(posts.length, 1);
+			assert.equal(m.getState().status, "ready");
+		});
 	});
 });

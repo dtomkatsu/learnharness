@@ -199,9 +199,24 @@ export function failedOutputCallIds(messages: readonly LhMessage[]): ReadonlySet
 
 // ─── id minting ──────────────────────────────────────────────────────────────
 
+/** Eight random hex characters. The browser mints message ids too (optimistic
+ *  answers and notes), and crypto.randomUUID exists only in a secure context
+ *  (https, localhost): opened over plain http on the tailnet
+ *  (http://madisons-mac-mini:3010) it is undefined, so every send threw here
+ *  before its POST and the page sat on Thinking… with nothing logged.
+ *  getRandomValues has no such limit; Math.random is the last resort. */
+function randomHex8(): string {
+	const c = globalThis.crypto;
+	if (typeof c?.randomUUID === "function") return c.randomUUID().slice(0, 8);
+	const bytes = new Uint8Array(4);
+	if (typeof c?.getRandomValues === "function") c.getRandomValues(bytes);
+	else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+	return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** The app-wide message id shape (same as the UIMessage-era mint). */
 export function newMessageId(): string {
-	return `msg_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+	return `msg_${Date.now().toString(36)}_${randomHex8()}`;
 }
 
 // ─── constructors (the input-event → native append mapping lives in
@@ -288,7 +303,7 @@ export function newPlanBlockMessage(
 	block: unknown,
 ): LhMarkerMessage {
 	return {
-		id: `pb_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
+		id: `pb_${Date.now().toString(36)}_${randomHex8()}`,
 		role: "custom",
 		customType: "plan-block",
 		content: "",
