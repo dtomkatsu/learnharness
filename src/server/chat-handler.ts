@@ -28,6 +28,7 @@ import {
 	unregisterLiveAgent,
 } from "./jobs.ts";
 import { runPiTurn } from "./pi/ui-stream.ts";
+import { teachMechanics } from "../agent/tools.ts";
 import { setFileAccessPolicy } from "../agent/tools/file-access.ts";
 import { fileAccessPolicy } from "./file-access.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
@@ -55,7 +56,10 @@ import { sideChats, type SideChatService } from "./side-chat.ts";
 import { SIDE_CONTEXT_BUDGET_ERROR, sideBudgetRetryDrops, sideContextWindow } from "./side-context-budget.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
-import { hasProbeDone, hasUnresolvedQuestion, pendingPluginQuestionOf, pluginQuestionCallsOf, questionCallsOf } from "../core/native-messages.ts";
+import { hasProbeDone, hasUnresolvedQuestion, newLessonNotesMessage, pendingPluginQuestionOf, pluginQuestionCallsOf, questionCallsOf } from "../core/native-messages.ts";
+import { lessonNotesText, normTerm } from "../core/vocabulary.ts";
+import { triggerVocabularyCheck } from "./vocabulary-check.ts";
+import { learnerNotes, learnerState, type LearnerNotes } from "./learner.ts";
 import { samePluginQuestionOccurrence } from "../core/plugin-questions.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens, projectedContextTokens, compactionInFlight } from "./compaction.ts";
@@ -605,10 +609,31 @@ export async function handleChatInput(
 		endTurn(chatId);
 		return new Response(sideBudgetError().message, { status: 400 });
 	}
-	// Only the learner/automatic input is write-ahead. Raw exchanges are
-	// already durable in sideChats; their delivery entries join the SDK
-	// request at its preparation boundary, and publish only if admitted.
-	const merged = [...record.messages, ...appends];
+	// LESSON NOTES (2026-11): what the vocabulary check found since the last
+	// turn — terms used before they were taught, side questions the learner
+	// opened — ride this turn as a model-facing marker AFTER the input (an
+	// answer's tool result stays adjacent to its call; the marker appends to
+	// the tail, so the cached prefix is untouched). Learner-driven teaching
+	// turns only: never a wake, retry or continuation, never practice/probe.
+	const learnerTurn = (input.type === "text" || input.type === "answer") && record.kind !== "practice";
+	const noteable = learnerTurn && hasProbeDone(record.messages);
+	const pendingFlags = noteable ? record.vocabulary?.flagged ?? [] : [];
+	const pendingSide = noteable ? record.vocabulary?.sideQuestions ?? [] : [];
+	// The learner model's part (2026-11): the profile at the lesson's first
+	// learner turn (the prober's too), due related items, leeches, unchecked
+	// earlier steps, term drift — see server/learner.ts learnerNotes.
+	let learnerPart: LearnerNotes | null = null;
+	if (learnerTurn) {
+		try { learnerPart = learnerNotes(learnerState({ chatStore: stores.chatStore, graphStore: stores.graphStore }), record, noteable, { mixed: teachMechanics(effective.agent.tools) === "mixed" }); }
+		catch (err) { console.error(`[chat ${chatId}] learner notes failed:`, err); }
+	}
+	const notesText = [noteable ? lessonNotesText(pendingFlags, pendingSide) : null, ...(learnerPart?.sections ?? [])].filter(Boolean).join("\n\n") || null;
+	const notes = notesText ? newLessonNotesMessage(notesText, { flagged: pendingFlags, sideQuestions: pendingSide, learner: learnerPart?.sections.length ?? 0 }) : null;
+	// Only the learner/automatic input (and the notes marker above) is
+	// write-ahead. Raw exchanges are already durable in sideChats; their
+	// delivery entries join the SDK request at its preparation boundary, and
+	// publish only if admitted.
+	const merged = [...record.messages, ...appends, ...(notes ? [notes] : [])];
 	// Retry preserves every persisted attempt. Pi needs a non-assistant
 	// tail to start continue(), so its temporary history omits the trailing
 	// failures only. Count that SAME temporary prefix at settlement, or the
