@@ -583,9 +583,10 @@ export class SessionModel {
 	 *  never persisted (write-ahead happens only on acceptance), so the
 	 *  retry waits out the running turn and re-POSTs the SAME body. Plugin
 	 *  question answers are excluded: a busy refusal needs explicit retry,
-	 *  never an automatic second grading attempt. */
-	async postInputEvent(input: ChatInput, signal?: AbortSignal, onPostPending?: (pending: boolean) => void): Promise<Response> {
-		const body = JSON.stringify({ chatId: this.chatId, input });
+	 *  never an automatic second grading attempt. `retry` and `sendId` belong
+	 *  to the no-ack watchdog (postAcknowledged). */
+	async postInputEvent(input: ChatInput, signal?: AbortSignal, onPostPending?: (pending: boolean) => void, retry?: { on: boolean }, sendId?: string): Promise<Response> {
+		const body = JSON.stringify(sendId ? { chatId: this.chatId, input, sendId } : { chatId: this.chatId, input });
 		const init: RequestInit = {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -599,7 +600,8 @@ export class SessionModel {
 		};
 		let response = await post();
 		if (input.type === "plugin-question-answer" || input.type === "plugin-problem-submission") return response;
-		let waited = 0;
+		// wall-clock, not poll intervals: a slow turnInFlight poll counts too
+		const waitStart = Date.now();
 		while (response.status === 409) {
 			// the server answered, the wait is ours: the watchdog holds its
 			// verdicts until the re-POST, which it watches like the first
@@ -609,6 +611,7 @@ export class SessionModel {
 			await delay(this.pollMs, signal);
 			if (signal?.aborted) return response;
 			if ((await turnInFlight(this)) !== false) continue;
+			if (retry) retry.on = false;
 			response = await post(); // may 409 again → loop
 		}
 		return response;
@@ -627,7 +630,7 @@ export class SessionModel {
 	 *  get through is no evidence either way: SEND_BLIND_CHECKS of those end
 	 *  the wait as unconfirmed (the learner reloads and looks), never as lost.
 	 *  A 409 wait is the server answering: no verdicts until the re-POST. */
-	private async postAcknowledged(input: ChatInput): Promise<Response> {
+	private async postAcknowledged(input: ChatInput, onPostPending?: (pending: boolean) => void): Promise<Response> {
 		// ack aborts the POST, only on a verdict; stop ends the watch (a
 		// finished POST must never see an abort — the teardown law above)
 		const ack = new AbortController(), stop = new AbortController();
@@ -682,7 +685,7 @@ export class SessionModel {
 		};
 		void watch();
 		try {
-			const res = await this.postInputEvent(input, ack.signal, retry, sendId);
+			const res = await this.postInputEvent(input, ack.signal, onPostPending, retry, sendId);
 			arrived = true;
 			return res;
 		} catch (err) {
@@ -1075,7 +1078,7 @@ export class SessionModel {
 			// connection is Diet A's whole job.
 			let res: Response;
 			try {
-				res = await this.postInputEvent(input, undefined, imageBearing ? pending => this.imagePostPending(controller, pending) : undefined);
+				res = await this.postAcknowledged(input, imageBearing ? pending => this.imagePostPending(controller, pending) : undefined);
 			} finally {
 				// The response follows optional processing and save. A detached or
 				// superseded request must never clear its successor's label.
