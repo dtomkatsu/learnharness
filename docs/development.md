@@ -42,6 +42,8 @@ npm run dev -- -H 0.0.0.0     # then browse to http://<this machine's IP>:3000
 
 The API accepts `localhost` and IP addresses as the host name. To use any other name (`mymac.local`, a reverse-proxy domain), list it in `LH_ALLOWED_HOSTS`. Browser writes must come from the same origin as the page.
 
+Fork addition: behind a front that ends TLS (`tailscale serve`) or a forwarder that passes the browser's headers on, the page's origin (`https://name:9750`) differs from the `http://` address this server sees. A write whose `Origin` is on a host name listed in `LH_ALLOWED_HOSTS` is accepted on any scheme or port. Only listed names qualify (not `localhost` or IP origins), and the browser's `Sec-Fetch-Site` must still say `same-origin`.
+
 ## Configuration
 
 Nonsecret settings are deltas in `<data root>/settings.json`; absent values resolve through `src/core/settings.ts` and `settings-resolution.ts`. Models and role overrides are settings, not environment variables. [Prompt overrides](../src/agent/prompts/README.md) live under `<data root>/prompts/` and require explicit enable switches.
@@ -54,7 +56,7 @@ Nonsecret settings are deltas in `<data root>/settings.json`; absent values reso
 | `TAVILY_API_KEY`, `BRAVE_API_KEY`, `EXA_API_KEY`, `FIRECRAWL_API_KEY`, `OLLAMA_API_KEY` | Optional search adapters. Without a Settings pin, the first keyed engine wins: Tavily → Brave → Exa → Firecrawl → Ollama. A pinned engine requires its own key; no silent fallback. Ollama search is hosted at ollama.com, not a local model server. Page fetching is independent; research can fetch known URLs without a search key. |
 | `DEEPGRAM_API_KEY` | Optional dictation token minting. |
 | `CHROME_PATH` | Chrome/Chromium executable fallback for demo verification; Electron's browser helper is primary. No extra Chromium is downloaded. |
-| `LH_ALLOWED_HOSTS` | Browser-only mode: extra host names the API accepts besides `localhost` and IP addresses. Comma-separated, case-insensitive, port ignored, no wildcards. |
+| `LH_ALLOWED_HOSTS` | Browser-only mode: extra host names the API accepts besides `localhost` and IP addresses. Comma-separated, case-insensitive, port ignored, no wildcards. Fork: also the names whose `Origin` a write may carry on any scheme or port (see above). |
 
 Ordinary Next development can read `.env.local`. Real environment keys take precedence over saved keys. Saved auth is restrictive-permission plaintext, not an encrypted vault. Packaged Electron sets separate data/auth locations under `userData`; it does not use the repo development profile.
 

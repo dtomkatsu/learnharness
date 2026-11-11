@@ -50,8 +50,29 @@ export function browserHostAllowed(host: string | null, env: Record<string, stri
 	}
 	if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
 	if (isIP(hostname.replace(/^\[|\]$/g, "")) !== 0) return true;
-	const allowed = (env.LH_ALLOWED_HOSTS ?? "").split(",").map((name) => name.trim().toLowerCase()).filter(Boolean);
-	return allowed.includes(hostname);
+	return allowedHostNames(env).includes(hostname);
+}
+
+function allowedHostNames(env: Record<string, string | undefined>): string[] {
+	return (env.LH_ALLOWED_HOSTS ?? "").split(",").map((name) => name.trim().toLowerCase()).filter(Boolean);
+}
+
+/** Fork (2026-11): a write whose Origin is on a host name the owner listed in
+ * LH_ALLOWED_HOSTS counts as same-origin on any scheme or port. A front that
+ * ends TLS (tailscale serve) or a forwarder that passes the browser's headers
+ * on (the tablet's /lh/ tunnel) hands this server the page's own origin
+ * (https://name:9750) while the server sees http://127.0.0.1:3010, so the exact
+ * comparison refused every tablet write. Only listed names qualify, not
+ * localhost or IP origins, and Sec-Fetch-Site must still say same-origin when
+ * the browser sends it, so another site's page gets nowhere. */
+export function browserOriginNameAllowed(origin: string, env: Record<string, string | undefined> = process.env): boolean {
+	let hostname: string;
+	try {
+		hostname = new URL(origin).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	return allowedHostNames(env).includes(hostname);
 }
 
 /** Shared by Proxy and the streamed document route that deliberately bypasses
@@ -73,7 +94,7 @@ export function browserAPIRefusal(request: Request, env: Record<string, string |
 	if (READ_METHODS.has(request.method.toUpperCase())) return;
 	const site = request.headers.get("sec-fetch-site");
 	const origin = request.headers.get("origin");
-	if ((site !== null && site !== "same-origin") || (origin !== null && origin !== subscriptionRequestOrigin(request))) {
+	if ((site !== null && site !== "same-origin") || (origin !== null && origin !== subscriptionRequestOrigin(request) && !browserOriginNameAllowed(origin, env))) {
 		return "Cross-site requests to the LearnHarness API are not allowed.";
 	}
 }
