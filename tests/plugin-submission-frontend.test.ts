@@ -171,7 +171,7 @@ test("model retry reuses accepted transformed history and never re-intercepts le
 	const prepared = await attempt.prepare(input, []); assert.ok(prepared && prepared.type === "text");
 	const history = [{ id: "accepted-user", role: "user", content: prepared.content.text, timestamp: 0 }] as LhMessage[];
 	const model = new SessionModel({ chatId: "chat", initialMessages: [], fetch: async (url, init) => {
-		if (String(url) === "/api/chat") { posted.push(JSON.parse(String(init?.body))); return Response.json({ accepted: true }); }
+		if (String(url) === "/api/chat") { const { sendId: _sendId, ...wire } = JSON.parse(String(init?.body)); posted.push(wire); return Response.json({ accepted: true }); }
 		if (String(url).endsWith("/stream")) return new Response("data: [DONE]\n\n");
 		return Response.json({ messages: history });
 	} });

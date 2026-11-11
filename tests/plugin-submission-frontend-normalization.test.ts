@@ -116,9 +116,10 @@ test("stop/supersession release only the old image owner; delayed ACK/GET cannot
 test("replacement stream retires unresolved preview/gate, and an old delayed ACK cannot invalidate its terminal GET", async () => {
 	const ack = deferred<Response>(), terminal = deferred<Response>(), readStarted = deferred<void>();
 	const current = { ...newUserMessage("replacement stream truth", [processed]), id: "replacement-terminal" } as LhMessage;
-	let reads = 0;
+	let reads = 0, postSignal: AbortSignal | undefined;
 	const model = new SessionModel({ chatId: "chat", initialMessages: [], fetch: async (url, init) => {
-		if (String(url) === "/api/chat") { assert.equal(init?.signal, undefined, "view supersession must not abort the accepted-POST path"); return ack.promise; }
+		// fork 2026-11: the POST carries the no-ack watchdog's own signal, which only a watchdog verdict aborts
+		if (String(url) === "/api/chat") { postSignal = init?.signal ?? undefined; return ack.promise; }
 		if (String(url).endsWith("/stream")) return new Response("data: [DONE]\n\n");
 		reads++; readStarted.resolve(); return terminal.promise;
 	} });
@@ -127,6 +128,7 @@ test("replacement stream retires unresolved preview/gate, and an old delayed ACK
 	assert.equal(model.getState().nativeMessages.length, 0);
 	ack.resolve(Response.json({ ok: true })); assert.equal(await oldSend, true);
 	terminal.resolve(Response.json({ messages: [current] })); await replacement;
+	assert.notEqual(postSignal?.aborted, true, "view supersession must not abort the accepted-POST path");
 	assert.equal(reads, 1); assert.equal(model.getState().reconciliation, "ready");
 	assert.deepEqual(model.getState().nativeMessages.map(message => message.id), ["replacement-terminal"]);
 });
