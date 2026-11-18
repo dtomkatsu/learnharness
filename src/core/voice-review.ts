@@ -3,13 +3,12 @@
  * voice, for a phone on the table or in a car mount. The page
  * (components/voice-review.tsx) owns the mic, the speech and the loop;
  * this module is the pure part: what a spoken reply means, what a card
- * and a verdict sound like, and where a missed card comes back.
+ * and its answer sound like, and where a missed card comes back.
  */
 
 export type VoiceCommand =
-	| "repeat" | "skip" | "dontKnow" | "pause" | "resume" | "stop"
-	| "lastRight" | "lastWrong"
-	| "yes" | "partly" | "no";
+	| "repeat" | "skip" | "reveal" | "dontKnow" | "pause" | "resume" | "stop"
+	| "again" | "hard" | "good" | "easy";
 
 /** A stretch of speech, in a language when it is not the page's own (a vocabulary word). */
 export interface SpeechSegment { text: string; lang?: string }
@@ -22,31 +21,29 @@ export function normalizeUtterance(text: string): string {
 	return s;
 }
 
+// "again" is the rating (the Again button), so repeating the card is said "repeat" / "say that again".
 const COMMANDS: [VoiceCommand, string[]][] = [
-	["repeat", ["repeat", "repeat that", "repeat the question", "repeat it", "say that again", "say it again", "say again", "again", "come again", "pardon", "what was the question", "one more time"]],
+	["repeat", ["repeat", "repeat that", "repeat the question", "repeat it", "say that again", "say it again", "come again", "pardon", "what was the question", "read it again"]],
 	["skip", ["skip", "skip it", "skip this", "skip this one", "next", "next one", "next card", "next question"]],
-	["dontKnow", ["i dont know", "dont know", "i do not know", "no idea", "i have no idea", "pass", "i pass", "not sure", "im not sure", "i give up", "give up", "tell me", "just tell me", "show me", "whats the answer", "what is the answer", "i forget", "i forgot", "i cant remember", "i dont remember"]],
+	["reveal", ["answer", "the answer", "show", "show me", "show answer", "show the answer", "show me the answer", "reveal", "reveal it", "flip", "flip it", "tell me", "just tell me", "whats the answer", "what is the answer", "read the answer"]],
+	["dontKnow", ["i dont know", "dont know", "i do not know", "no idea", "i have no idea", "pass", "i pass", "i give up", "give up", "i forget", "i forgot", "i cant remember", "i dont remember"]],
 	["pause", ["pause", "hold on", "wait", "hang on", "one second", "one sec", "give me a second", "give me a minute"]],
 	["resume", ["resume", "continue", "go on", "keep going", "go", "go ahead", "im back", "ready", "im ready", "lets go", "start", "more", "keep it going"]],
 	["stop", ["stop", "end", "quit", "done", "im done", "thats enough", "enough", "end session", "stop session", "finish", "were done", "thats it for now"]],
-	["lastRight", ["last one was right", "the last one was right", "i was right", "that was right", "i got that right", "i got it right", "mark it right", "mark that right", "that should be right", "actually i was right"]],
-	["lastWrong", ["last one was wrong", "the last one was wrong", "i was wrong", "that was wrong", "mark it wrong", "mark that wrong", "that should be wrong", "i got that wrong"]],
-];
-const SELF_GRADE: [VoiceCommand, string[]][] = [
-	["yes", ["yes", "yeah", "yep", "yup", "got it", "i got it", "correct", "right", "i was right", "yes i did", "i did"]],
-	["partly", ["partly", "partially", "sort of", "kind of", "sorta", "kinda", "half", "mostly", "some of it", "a bit"]],
-	["no", ["no", "nope", "nah", "missed it", "i missed it", "wrong", "i was wrong", "no i didnt", "i didnt", "not really"]],
+	["again", ["again", "try again", "again please", "missed it", "i missed it", "missed", "wrong", "i got it wrong", "nope", "no"]],
+	["hard", ["hard", "that was hard", "difficult", "tough", "barely", "sort of", "kind of", "kinda", "sorta", "partly", "struggled"]],
+	["good", ["good", "got it", "i got it", "yes", "yeah", "yep", "correct", "right", "knew it", "i knew it", "fine", "pretty good"]],
+	["easy", ["easy", "too easy", "super easy", "that was easy", "very easy", "trivial", "obviously", "of course", "piece of cake"]],
 ];
 
-/**
- * What a reply means when it is a command — the WHOLE reply, so an answer
- * that merely contains "next" or "stop" is graded as an answer. `selfGrade`:
- * the page just asked "did you get it?", so yes/partly/no are heard first.
- */
-export function voiceCommand(text: string, opts: { selfGrade?: boolean } = {}): VoiceCommand | null {
+/** The rating each rating word gives, as the review buttons number them (1 Again … 4 Easy). */
+export const VOICE_RATING: Partial<Record<VoiceCommand, 1 | 2 | 3 | 4>> = { again: 1, dontKnow: 1, hard: 2, good: 3, easy: 4 };
+
+/** What a reply means when it is a command — the WHOLE reply, so an answer that merely contains "next" or "good" is not one. */
+export function voiceCommand(text: string): VoiceCommand | null {
 	const s = normalizeUtterance(text);
 	if (!s) return null;
-	for (const [cmd, says] of opts.selfGrade ? [...SELF_GRADE, ...COMMANDS] : COMMANDS) if (says.includes(s)) return cmd;
+	for (const [cmd, says] of COMMANDS) if (says.includes(s)) return cmd;
 	return null;
 }
 
@@ -130,37 +127,9 @@ export function promptSpeech(card: VoiceCard): SpeechSegment[] {
 	return out;
 }
 
-/** The grading answer from POST /api/learner/review the voice reads. */
-export interface VoiceVerdict {
-	rating: number;
-	reason?: string;
-	answer?: string;
-	belief?: string;
-	looksFor?: string[];
-	hit?: number[];
-}
-
-const RATE_SAID: Record<number, string> = { 1: "Not quite.", 2: "Partly.", 3: "Right.", 4: "Spot on." };
-
-/**
- * What is said after a graded answer. Right: the word, and the grader's
- * reason only when short (it is where "but you left out X" lives). Wrong
- * or partial: the reason, the points missed, and the answer — the
- * corrective feedback is the part of a miss that does the work.
- */
-export function verdictSpeech(v: VoiceVerdict, card: VoiceCard): string {
-	const parts = [RATE_SAID[v.rating] ?? ""];
-	const reason = v.reason ? speakable(v.reason) : "";
-	if (v.rating >= 3) {
-		if (reason && reason.length <= 160 && v.rating === 3) parts.push(reason);
-		return parts.join(" ").trim();
-	}
-	if (reason) parts.push(reason);
-	if (v.belief) parts.push(`It sounded like you think ${speakable(v.belief).replace(/\.$/, "")}.`);
-	const missed = (v.looksFor ?? []).filter((_t, i) => v.hit && !v.hit.includes(i));
-	if (missed.length && missed.length < (v.looksFor ?? []).length) parts.push(`You missed: ${missed.map(speakable).map((t) => t.replace(/\.$/, "")).join("; ")}.`);
-	else parts.push(`The answer: ${speakable(v.answer || card.answer)}`);
-	return parts.join(" ").replace(/\s+/g, " ").trim();
+/** What is said to give a card's answer. */
+export function answerSpeech(card: VoiceCard): string {
+	return `The answer: ${speakable(card.answer)}`;
 }
 
 /**

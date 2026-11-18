@@ -1,25 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { HelpCircleIcon, MicIcon, PauseIcon, PlayIcon, RotateCcwIcon, SkipForwardIcon, SquareIcon } from "lucide-react";
+import { EyeIcon, MicIcon, PauseIcon, PlayIcon, RotateCcwIcon, SkipForwardIcon, SquareIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-	deepgramListenUrl, promptSpeech, requeueMissed, speakable, speechChunks, verdictSpeech, voiceCommand,
-	type SpeechSegment, type VoiceCard, type VoiceCommand, type VoiceVerdict,
+	VOICE_RATING, answerSpeech, deepgramListenUrl, promptSpeech, requeueMissed, speechChunks, voiceCommand,
+	type SpeechSegment, type VoiceCard, type VoiceCommand,
 } from "@/src/core";
 
 /**
- * Hands-free review (2026-11): the review queue read aloud and answered
+ * Hands-free review (2026-11): the review queue read aloud and rated
  * out loud, no button held. Tap Start once (phones only let a page speak
- * and record after a tap), then: the card is read → the mic opens → a
- * pause ends the answer → the cheap model grades it (POST
- * /api/learner/review, the same schedule as every other review) → the
- * verdict is read → next. "Repeat", "skip", "I don't know", "pause",
- * "stop", and "the last one was right/wrong" work as whole replies; the
- * buttons do the same for when a hand is free.
+ * and record after a tap), then: the card is read → you answer, out loud
+ * or in your head → "answer" (or anything that is not a command) reads
+ * the card's answer → you rate it "again", "hard", "good" or "easy", the
+ * same four grades as the review buttons (POST /api/learner/review with
+ * the rating; nothing is graded by a model, owner 2026-11-18) → next.
+ * "Repeat", "skip", "pause", "stop" work as whole replies; the buttons do
+ * the same for when a hand is free.
  *
  * Half duplex on purpose: the mic is closed while the page speaks, so it
- * never grades its own voice, and on iOS an open mic would also drop the
+ * never hears its own voice, and on iOS an open mic would also drop the
  * speech to the earpiece.
  *
  * Two recognizers: Deepgram (the dictation key, /api/stt/token) when the
@@ -28,7 +29,7 @@ import {
  */
 
 type Engine = "deepgram" | "browser";
-type Phase = "idle" | "loading" | "speaking" | "listening" | "checking" | "paused" | "done" | "error";
+type Phase = "idle" | "loading" | "speaking" | "listening" | "paused" | "done" | "error";
 
 /** Nothing said for this long gives the turn back (the page asks once, then pauses). */
 const QUIET_MS = 12000;
@@ -191,14 +192,13 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 	return body as T;
 }
 const post = <T,>(url: string, body: unknown) => api<T>(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-type Graded = VoiceVerdict & { eventId: string; answer?: string };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ─── the page ───────────────────────────────────────────────────────────────
 
 const PHASE_WORD: Record<Phase, string> = {
-	idle: "Ready", loading: "Getting cards…", speaking: "Speaking", listening: "Listening", checking: "Checking…", paused: "Paused", done: "Done", error: "Stopped",
+	idle: "Ready", loading: "Getting cards…", speaking: "Speaking", listening: "Listening", paused: "Paused", done: "Done", error: "Stopped",
 };
 
 export function VoiceReview({ deck, engine: forced }: { deck?: string; engine?: Engine }) {
@@ -275,14 +275,14 @@ export function VoiceReview({ deck, engine: forced }: { deck?: string; engine?: 
 			return browserListen(signal, setHeard);
 		};
 		/** One reply. A pressed button wins over what the mic heard. */
-		const hear = async (selfGrade = false): Promise<{ cmd: VoiceCommand | null; text: string }> => {
+		const hear = async (): Promise<{ cmd: VoiceCommand | null; text: string }> => {
 			const early = take(); if (early) return { cmd: early, text: "" };
 			show("listening"); setHeard("");
 			await sleep(250);   // the speaker's tail out of the room before the mic opens
 			const text = await listenOnce(step());
 			const pressed = take(); if (pressed) return { cmd: pressed, text: "" };
 			setHeard(text);
-			return { cmd: voiceCommand(text, { selfGrade }), text };
+			return { cmd: voiceCommand(text), text };
 		};
 		const waitForPress = () => new Promise<VoiceCommand>((res) => { waiterRef.current = (c) => { waiterRef.current = null; pendingRef.current = null; res(c); }; });
 		/** Paused: listens for "continue" a few times, then stops listening (no mic left open for nothing) and waits for a tap. */
@@ -301,7 +301,7 @@ export function VoiceReview({ deck, engine: forced }: { deck?: string; engine?: 
 			return "stop";
 		};
 
-		let queue: VoiceCard[] = [], i = 0, done = 0, lastEvent: string | null = null;
+		let queue: VoiceCard[] = [], i = 0, done = 0, hinted = false;
 		const load = async () => {
 			show("loading"); setSaid("Getting your cards… (a card is written the first time it comes up, a few seconds)");
 			queue = (await api<{ queue?: VoiceCard[] }>(`/api/learner/review?limit=25${deck ? `&deck=${encodeURIComponent(deck)}` : ""}`)).queue ?? [];
@@ -318,7 +318,7 @@ export function VoiceReview({ deck, engine: forced }: { deck?: string; engine?: 
 			await load();
 			if (!alive()) return;
 			if (!queue.length) { await speak("Nothing is due right now."); show("done"); return; }
-			await speak(`${queue.length} card${queue.length === 1 ? "" : "s"} due. Answer out loud. You can say repeat, skip, I don't know, pause, or stop.`);
+			await speak(`${queue.length} card${queue.length === 1 ? "" : "s"} due. Answer out loud or in your head, say answer to hear it, then rate it: again, hard, good, or easy.`);
 
 			cards: while (alive()) {
 				if (i >= queue.length) {
@@ -332,62 +332,44 @@ export function VoiceReview({ deck, engine: forced }: { deck?: string; engine?: 
 				const c = queue[i]!;
 				setCard(c); setPos({ i, n: queue.length });
 				await speak(promptSpeech(c));
-				let rating: number | null = null, quiet = 0;
+				let rating: 1 | 2 | 3 | 4 | null = null, quiet = 0, revealed = false;
+				const reveal = async () => {
+					revealed = true;
+					// The first time in a session, say what to say next; after that the answer alone.
+					await speak(answerSpeech(c) + (hinted ? "" : " How was it? Again, hard, good, or easy?"));
+					hinted = true;
+				};
 				turn: while (alive()) {
 					const { cmd, text } = await hear();
 					if (!alive()) return;
+					const said = cmd ? VOICE_RATING[cmd] : undefined;
+					if (said) { rating = said; break turn; }
 					switch (cmd) {
-						case "repeat": await speak(promptSpeech(c)); continue;
+						case "repeat": await speak(revealed ? [{ text: answerSpeech(c) }] : promptSpeech(c)); continue;
 						case "skip": break turn;
 						case "stop": break cards;
 						case "resume": continue;
+						case "reveal": await reveal(); continue;
 						case "pause": {
 							if ((await waitResume()) === "stop") break cards;
-							await speak(promptSpeech(c)); continue;
-						}
-						case "lastRight": case "lastWrong": {
-							if (!lastEvent) { await speak("There's no last one to change."); continue; }
-							const j: { eventId: string } = await post("/api/learner/review/overrule", { eventId: lastEvent, rating: cmd === "lastRight" ? 3 : 1 });
-							lastEvent = j.eventId;
-							await speak(`Changed the last one to ${cmd === "lastRight" ? "right" : "wrong"}. Now, this one.`); continue;
-						}
-						case "dontKnow": {
-							const j = await post<Graded>("/api/learner/review", { itemId: c.itemId, mode: c.mode, rating: 1 });
-							lastEvent = j.eventId; rating = 1;
-							await speak(`The answer: ${speakable(j.answer || c.answer)}`);
-							break turn;
+							await speak(revealed ? [{ text: answerSpeech(c) }] : promptSpeech(c)); continue;
 						}
 					}
 					if (!text) {
-						if (++quiet === 1) { await speak("Take your time. Say repeat to hear it again, or I don't know."); continue; }
+						if (++quiet === 1) { await speak(revealed ? "Again, hard, good, or easy?" : "Take your time. Say answer to hear it."); continue; }
 						if ((await waitResume()) === "stop") break cards;
-						quiet = 0; await speak(promptSpeech(c)); continue;
+						quiet = 0; await speak(revealed ? [{ text: answerSpeech(c) }] : promptSpeech(c)); continue;
 					}
-					show("checking");
-					try {
-						const v = await post<Graded>("/api/learner/review", { itemId: c.itemId, mode: c.mode, response: text });
-						lastEvent = v.eventId; rating = v.rating;
-						await speak(verdictSpeech(v, c));
-					} catch (e) {
-						// No grader (the cheap slot unset, or it failed): the answer, then the learner grades it.
-						const answer = e instanceof ApiError && typeof e.body.answer === "string" ? e.body.answer : c.answer;
-						await speak(`I can't grade that right now. The answer: ${speakable(answer)} Did you get it? Say yes, partly, or no.`);
-						for (let k = 0; k < 3 && alive(); k++) {
-							const g = (await hear(true)).cmd;
-							const self = g === "yes" ? 3 : g === "partly" ? 2 : g === "no" ? 1 : null;
-							if (self) {
-								const j = await post<Graded>("/api/learner/review", { itemId: c.itemId, mode: c.mode, rating: self, response: text });
-								lastEvent = j.eventId; rating = self;
-								await speak("Got it."); break;
-							}
-							if (g === "skip") break;
-							if (g === "stop") break cards;
-							await speak("Say yes, partly, or no.");
-						}
-					}
-					break turn;
+					// Anything else is the answer said out loud: nothing grades it, the card's answer is read to check it against.
+					if (!revealed) await reveal();
+					else await speak("Again, hard, good, or easy?");
 				}
-				if (rating !== null) { done++; setReviewed(done); queue = requeueMissed(queue, i, rating); }
+				if (rating !== null) {
+					await post("/api/learner/review", { itemId: c.itemId, mode: c.mode, rating });
+					done++; setReviewed(done); queue = requeueMissed(queue, i, rating);
+					// Rated a miss before hearing the answer: it is read now, the part of a miss that does the work.
+					if (!revealed && rating <= 2) await speak(answerSpeech(c));
+				}
 				i++;
 			}
 			if (!alive()) return;
@@ -446,10 +428,15 @@ export function VoiceReview({ deck, engine: forced }: { deck?: string; engine?: 
 						<div className="grid grid-cols-2 gap-2">
 							<Button variant="outline" size="lg" onClick={() => press("repeat")}><RotateCcwIcon />Repeat</Button>
 							<Button variant="outline" size="lg" onClick={() => press("skip")}><SkipForwardIcon />Skip</Button>
-							<Button variant="outline" size="lg" onClick={() => press("dontKnow")}><HelpCircleIcon />Don&apos;t know</Button>
+							<Button variant="outline" size="lg" onClick={() => press("reveal")}><EyeIcon />Answer</Button>
 							{phase === "paused"
 								? <Button variant="outline" size="lg" onClick={() => press("resume")}><PlayIcon />Resume</Button>
 								: <Button variant="outline" size="lg" onClick={() => press("pause")}><PauseIcon />Pause</Button>}
+							<div className="col-span-2 grid grid-cols-4 gap-2">
+								{(["again", "hard", "good", "easy"] as const).map((r) => (
+									<Button key={r} variant="secondary" size="lg" className="capitalize" onClick={() => press(r)}>{r}</Button>
+								))}
+							</div>
 							<Button variant="destructive" size="lg" className="col-span-2" onClick={() => press("stop")}><SquareIcon />Stop</Button>
 						</div>
 					) : (
@@ -462,7 +449,7 @@ export function VoiceReview({ deck, engine: forced }: { deck?: string; engine?: 
 					</label>
 					{!running && (
 						<p className="text-xs leading-relaxed text-muted-foreground">
-							The phone reads each card, you answer out loud, and a pause ends your answer. Say <i>repeat</i>, <i>skip</i>, <i>I don&apos;t know</i>, <i>pause</i>, <i>stop</i>, or <i>the last one was right</i>. Keep the screen on: a locked phone stops the mic.
+							The phone reads each card. Answer out loud or in your head; say <i>answer</i> to hear it, then rate it: <i>again</i>, <i>hard</i>, <i>good</i> or <i>easy</i>, as on the buttons. Also <i>repeat</i>, <i>skip</i>, <i>pause</i>, <i>stop</i>. Keep the screen on: a locked phone stops the mic.
 						</p>
 					)}
 				</div>

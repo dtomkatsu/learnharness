@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { promptSpeech, requeueMissed, speakable, speechChunks, texToSpeech, verdictSpeech, voiceCommand, type VoiceCard } from "../src/core/voice-review.ts";
+import { VOICE_RATING, answerSpeech, promptSpeech, requeueMissed, speakable, speechChunks, texToSpeech, voiceCommand, type VoiceCard } from "../src/core/voice-review.ts";
 
 const card = (over: Partial<VoiceCard> = {}): VoiceCard => ({ itemId: "node:a", mode: "recall", label: "A", prompt: "What is **A**?", answer: "The first letter.", ...over });
 
@@ -11,18 +11,21 @@ describe("voice commands", () => {
 		assert.equal(voiceCommand("I don’t know"), "dontKnow");
 		assert.equal(voiceCommand("Say that again, please"), "repeat");
 		assert.equal(voiceCommand("OK, stop"), "stop");
+		assert.equal(voiceCommand("Show me the answer"), "reveal");
 		assert.equal(voiceCommand("the next step is to stop the reaction"), null);
-		assert.equal(voiceCommand("I don't know exactly, but it is about supply"), null);
+		assert.equal(voiceCommand("good question, it is about supply"), null);
 		assert.equal(voiceCommand(""), null);
 	});
-	it("hears yes / partly / no only when asked to grade oneself", () => {
-		assert.equal(voiceCommand("Yeah"), null);
-		assert.equal(voiceCommand("Yeah", { selfGrade: true }), "yes");
-		assert.equal(voiceCommand("sort of", { selfGrade: true }), "partly");
-		assert.equal(voiceCommand("Nope.", { selfGrade: true }), "no");
-		assert.equal(voiceCommand("pause", { selfGrade: true }), "pause");
-		// on the next card, "I was right" corrects the previous grade
-		assert.equal(voiceCommand("Actually I was right"), "lastRight");
+	it("hears the four review grades, as the buttons number them", () => {
+		const rate = (t: string) => VOICE_RATING[voiceCommand(t)!];
+		assert.equal(rate("Again."), 1);
+		assert.equal(rate("try again"), 1);
+		assert.equal(rate("I don't know"), 1);
+		assert.equal(rate("That was hard"), 2);
+		assert.equal(rate("Good"), 3);
+		assert.equal(rate("got it"), 3);
+		assert.equal(rate("Easy!"), 4);
+		assert.equal(VOICE_RATING[voiceCommand("repeat")!], undefined);
 	});
 });
 
@@ -53,11 +56,8 @@ describe("prompts and verdicts", () => {
 		assert.deepEqual(promptSpeech(card({ shape: "one sentence", looksFor: ["x", "y"] })).map((s) => s.text), ["What is A?", "one sentence, 2 points."]);
 		assert.equal(promptSpeech(card({ retry: true }))[0]!.text, "Again, the one you missed.");
 	});
-	it("gives the answer on a miss and only the word on a clean hit", () => {
-		assert.equal(verdictSpeech({ rating: 4, reason: "Exactly." }, card()), "Spot on.");
-		assert.equal(verdictSpeech({ rating: 3, reason: "Yes, though you skipped the why." }, card()), "Right. Yes, though you skipped the why.");
-		assert.equal(verdictSpeech({ rating: 1, reason: "That is B.", answer: "The **first** letter." }, card()), "Not quite. That is B. The answer: The first letter.");
-		assert.equal(verdictSpeech({ rating: 2, looksFor: ["names it", "says why"], hit: [0] }, card()), "Partly. You missed: says why.");
+	it("reads the answer as speech", () => {
+		assert.equal(answerSpeech(card({ answer: "It is $x^2$." })), "The answer: It is x squared.");
 	});
 	it("brings a missed card back four cards on, at most three times", () => {
 		const q = ["a", "b", "c", "d", "e", "f", "g"].map((id) => card({ itemId: id }));
