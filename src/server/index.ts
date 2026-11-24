@@ -59,6 +59,7 @@ export * from "./learner.ts";
 export * from "./notes.ts";
 export * from "./courses.ts";
 export { appendEvidence, readEvidence, readCards, type Card, type CardFace } from "../store/learner.ts";
+export { refreshModelCatalog } from "./remote-model-catalog.ts";
 export { subscriptionControlsResponse, subscriptionBrowserResponse } from "./web-subscription-http.ts";
 export { sessionCost } from "./pricing.ts";
 export { initializePlugins, getPluginHost, getPluginAgentContributions, getPluginQuestionTypeResolver, pluginTransport } from "./plugins.ts";

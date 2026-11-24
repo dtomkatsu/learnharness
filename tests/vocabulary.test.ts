@@ -15,7 +15,8 @@ import { after, describe, it } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Type, createProvider, createFauxCore, fauxAssistantMessage, fauxText, type StreamFunction } from "@earendil-works/pi-ai";
+import { createProvider, createFauxCore, fauxAssistantMessage, fauxText, type StreamFunction } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "lh-vocabulary-"));
 const originalEnv = process.env;
